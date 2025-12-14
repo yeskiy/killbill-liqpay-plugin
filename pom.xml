@@ -1,0 +1,325 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.sailkit.billing.plugin</groupId>
+    <artifactId>liqpay-plugin</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Kill Bill LiqPay Payment Plugin</name>
+    <description>Kill Bill payment plugin for LiqPay payment gateway</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <killbill-api.version>0.54.0</killbill-api.version>
+        <killbill-plugin-api.version>0.27.3</killbill-plugin-api.version>
+    </properties>
+
+    <dependencies>
+        <!-- Kill Bill APIs -->
+        <dependency>
+            <groupId>org.kill-bill.billing</groupId>
+            <artifactId>killbill-api</artifactId>
+            <version>${killbill-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.kill-bill.billing.plugin</groupId>
+            <artifactId>killbill-plugin-api-payment</artifactId>
+            <version>${killbill-plugin-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.kill-bill.billing.plugin</groupId>
+            <artifactId>killbill-plugin-api-notification</artifactId>
+            <version>${killbill-plugin-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Kill Bill OSGi libs -->
+        <dependency>
+            <groupId>org.kill-bill.billing</groupId>
+            <artifactId>killbill-platform-osgi-bundles-lib-killbill</artifactId>
+            <version>0.41.8</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.kill-bill.billing</groupId>
+            <artifactId>killbill-platform-osgi-api</artifactId>
+            <version>0.41.8</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Kill Bill Plugin Framework - embedded in bundle -->
+        <dependency>
+            <groupId>org.kill-bill.billing.plugin.java</groupId>
+            <artifactId>killbill-base-plugin</artifactId>
+            <version>5.1.6</version>
+            <scope>compile</scope>
+            <exclusions>
+                <!-- Exclude provided dependencies -->
+                <exclusion>
+                    <groupId>org.kill-bill.billing</groupId>
+                    <artifactId>killbill-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.kill-bill.billing.plugin</groupId>
+                    <artifactId>killbill-plugin-api-payment</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.kill-bill.billing.plugin</groupId>
+                    <artifactId>killbill-plugin-api-notification</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.osgi</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>javax.servlet</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>joda-time</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.kill-bill.commons</groupId>
+            <artifactId>killbill-clock</artifactId>
+            <version>0.25.0</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- HTTP Client -->
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+            <version>4.5.14</version>
+        </dependency>
+
+        <!-- JSON Processing -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <!-- Jackson Joda Time support (required by PluginAppBuilder) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-joda</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <!-- Jackson Module Parameter Names (required by PluginAppBuilder) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-parameter-names</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <!-- Jackson Module Afterburner (required by PluginAppBuilder) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-afterburner</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+
+        <!-- Database (jOOQ) - compile scope to embed in bundle -->
+        <dependency>
+            <groupId>org.jooq</groupId>
+            <artifactId>jooq</artifactId>
+            <version>3.14.16</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Servlet API -->
+        <dependency>
+            <groupId>javax.servlet</groupId>
+            <artifactId>javax.servlet-api</artifactId>
+            <version>4.0.1</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- JAX-RS API -->
+        <dependency>
+            <groupId>javax.ws.rs</groupId>
+            <artifactId>javax.ws.rs-api</artifactId>
+            <version>2.1.1</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- OSGi -->
+        <dependency>
+            <groupId>org.osgi</groupId>
+            <artifactId>org.osgi.core</artifactId>
+            <version>6.0.0</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.osgi</groupId>
+            <artifactId>org.osgi.service.http</artifactId>
+            <version>1.2.2</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Joda Time (compile scope - needed by jackson-datatype-joda) -->
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.12.5</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Typesafe Config (needed by PluginAppBuilder) -->
+        <dependency>
+            <groupId>com.typesafe</groupId>
+            <artifactId>config</artifactId>
+            <version>1.4.2</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.7.36</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.9.3</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.4.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <manifestEntries>
+                                        <Bundle-SymbolicName>killbill-liqpay</Bundle-SymbolicName>
+                                        <Bundle-Name>Kill Bill LiqPay Plugin</Bundle-Name>
+                                        <Bundle-Version>1.0.0</Bundle-Version>
+                                        <Bundle-ManifestVersion>2</Bundle-ManifestVersion>
+                                        <Bundle-Activator>io.sailkit.billing.plugin.liqpay.LiqPayActivator</Bundle-Activator>
+                                        <Import-Package>org.killbill.billing.osgi.libs.killbill,org.killbill.billing.osgi.api,org.killbill.billing.payment.plugin.api,org.killbill.billing.payment.api,org.killbill.billing.catalog.api,org.killbill.billing.account.api,org.killbill.billing.util.callcontext,org.killbill.billing.util.entity,org.killbill.billing.tenant.api,org.killbill.clock,org.joda.time,org.osgi.framework,org.osgi.service.http,org.osgi.util.tracker,javax.servlet,javax.servlet.http,javax.sql,javax.xml,javax.xml.parsers,javax.xml.transform,javax.net,javax.net.ssl,javax.security.auth.x500,javax.crypto,javax.crypto.spec,javax.naming,javax.naming.directory,javax.naming.ldap,org.ietf.jgss,org.xml.sax,org.xml.sax.helpers,org.w3c.dom,org.slf4j</Import-Package>
+                                    </manifestEntries>
+                                </transformer>
+                            </transformers>
+                            <artifactSet>
+                                <includes>
+                                    <include>org.apache.httpcomponents:*</include>
+                                    <include>com.fasterxml.jackson.core:*</include>
+                                    <include>com.fasterxml.jackson.datatype:*</include>
+                                    <include>com.fasterxml.jackson.module:*</include>
+                                    <include>joda-time:*</include>
+                                    <include>com.typesafe:*</include>
+                                    <include>commons-logging:*</include>
+                                    <include>commons-codec:*</include>
+                                    <include>org.jooq:*</include>
+                                    <include>io.r2dbc:*</include>
+                                    <include>org.reactivestreams:*</include>
+                                    <include>javax.xml.bind:*</include>
+                                    <include>org.kill-bill.billing.plugin.java:killbill-base-plugin</include>
+                                    <include>org.kill-bill.billing:killbill-platform-osgi-bundles-lib-killbill</include>
+                                    <include>org.kill-bill.billing:killbill-platform-osgi-bundles-lib-slf4j-osgi</include>
+                                    <include>org.kill-bill.commons:*</include>
+                                    <include>io.swagger:*</include>
+                                    <include>com.google.guava:*</include>
+                                    <include>com.google.inject:*</include>
+                                    <include>javax.inject:*</include>
+                                    <include>aopalliance:*</include>
+                                    <include>io.jooby:*</include>
+                                    <include>org.jooby:*</include>
+                                </includes>
+                            </artifactSet>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+            </plugin>
+        </plugins>
+    </build>
+
+    <repositories>
+        <repository>
+            <id>sonatype-nexus-releases</id>
+            <url>https://oss.sonatype.org/content/repositories/releases</url>
+        </repository>
+        <repository>
+            <id>sonatype-nexus-snapshots</id>
+            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+</project>
