@@ -58,6 +58,11 @@ cp target/liqpay-plugin-1.0.0-SNAPSHOT.jar /var/lib/killbill/bundles/plugins/jav
 - CI runs on every push/PR: Maven build and tests.
 - Commit messages are linted for Conventional Commits.
 - Tagging `vX.Y.Z` triggers a release build and uploads the shaded JAR to the GitHub Release.
+- Create and push a tag:
+  ```bash
+  git tag vX.Y.Z
+  git push origin vX.Y.Z
+  ```
 
 ## Contributing
 - Follow Conventional Commits (`type(scope): summary`).
