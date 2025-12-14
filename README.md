@@ -1,4 +1,5 @@
 # Kill Bill LiqPay Payment Plugin
+[![Security Status](https://snyk.io/test/github/yeskiy/killbill-liqpay-plugin/badge.svg?targetFile=pom.xml&org=29bd1a78-0798-42bc-aaca-abbd019ff271)](https://snyk.io/test/github/yeskiy/killbill-liqpay-plugin?targetFile=pom.xml&org=29bd1a78-0798-42bc-aaca-abbd019ff271)
 
 Payment plugin for [Kill Bill](https://killbill.io/) that integrates the [LiqPay](https://www.liqpay.ua/) payment gateway.
 
