@@ -239,7 +239,11 @@ public class LiqPayDao {
             stmt.setString(3, kbTransactionId != null ? kbTransactionId.toString() : null);
             stmt.setString(4, kbPaymentMethodId != null ? kbPaymentMethodId.toString() : null);
             stmt.setString(5, kbTenantId.toString());
-            stmt.setString(6, response.getOrderId() != null ? response.getOrderId() : response.getLiqpayOrderId());
+            // Use orderId from response, or fallback to KB transaction ID if not available
+            String orderId = response.getOrderId() != null ? response.getOrderId() :
+                    (response.getLiqpayOrderId() != null ? response.getLiqpayOrderId() :
+                    (kbTransactionId != null ? kbTransactionId.toString() : "unknown"));
+            stmt.setString(6, orderId);
             stmt.setString(7, response.getPaymentId() != null ? response.getPaymentId().toString() : null);
             stmt.setString(8, response.getTransactionId() != null ? response.getTransactionId().toString() : null);
             stmt.setString(9, transactionType);

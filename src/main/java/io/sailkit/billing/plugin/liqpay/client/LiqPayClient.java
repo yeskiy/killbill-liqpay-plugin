@@ -102,8 +102,15 @@ public class LiqPayClient {
             params.putIfAbsent("language", language);
         }
 
+        // Log the full request payload for debugging (helpful for LiqPay support)
+        logger.info("LiqPay API Request - Action: {}, Order: {}, Full params: {}",
+                params.get("action"), params.get("order_id"), params);
+
         String data = LiqPaySignature.encodeData(params);
         String signature = LiqPaySignature.createSignature(privateKey, data);
+
+        logger.info("LiqPay API Request - URL: {}, data (base64): {}, signature: {}",
+                API_URL, data, signature);
 
         return executeRequest(data, signature);
     }
@@ -121,17 +128,20 @@ public class LiqPayClient {
         try {
             httpPost.setEntity(new UrlEncodedFormEntity(formParams, StandardCharsets.UTF_8));
 
-            logger.debug("Sending request to LiqPay API");
+            logger.info("Sending HTTP POST to LiqPay API: {}", API_URL);
 
             try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                int statusCode = response.getStatusLine().getStatusCode();
                 HttpEntity entity = response.getEntity();
                 String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
 
-                logger.debug("LiqPay API response: {}", responseBody);
+                logger.info("LiqPay API Response - HTTP Status: {}, Body: {}", statusCode, responseBody);
 
                 LiqPayResponse liqPayResponse = LiqPayResponse.fromJson(responseBody);
 
                 if (liqPayResponse.isError()) {
+                    logger.error("LiqPay API Error - Status: {}, ErrCode: {}, ErrDescription: {}",
+                            liqPayResponse.getStatus(), liqPayResponse.getErrCode(), liqPayResponse.getErrDescription());
                     throw new LiqPayException(liqPayResponse);
                 }
 
@@ -204,10 +214,16 @@ public class LiqPayClient {
     }
 
     /**
-     * Voids (releases) a held payment.
+     * Releases a held payment by refunding the held amount.
+     * Note: LiqPay does not have an "unhold" action. Hold releases use the refund API.
+     *
+     * @param orderId Original hold order ID
+     * @param amount Amount to release (must match held amount)
+     * @return LiqPay response
+     * @throws LiqPayException if the request fails
      */
-    public LiqPayResponse unhold(String orderId) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.unhold(publicKey, orderId)
+    public LiqPayResponse releaseHold(String orderId, BigDecimal amount) throws LiqPayException {
+        LiqPayRequest request = LiqPayRequest.releaseHold(publicKey, orderId, amount)
                 .build();
         return request(request);
     }

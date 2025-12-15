@@ -44,7 +44,7 @@ class LiqPayRequestTest {
 
         // Then
         Map<String, Object> params = request.getParams();
-        assertEquals(7, params.get("version"));
+        assertEquals(3, params.get("version"));
         assertEquals(TEST_PUBLIC_KEY, params.get("public_key"));
         assertEquals("pay", params.get("action"));
         assertEquals(TEST_ORDER_ID, params.get("order_id"));
@@ -106,15 +106,16 @@ class LiqPayRequestTest {
     }
 
     @Test
-    void testUnholdRequestBuilder() {
-        // When
-        LiqPayRequest request = LiqPayRequest.unhold(TEST_PUBLIC_KEY, TEST_ORDER_ID)
+    void testReleaseHoldRequestBuilder() {
+        // When - releaseHold uses refund API internally
+        LiqPayRequest request = LiqPayRequest.releaseHold(TEST_PUBLIC_KEY, TEST_ORDER_ID, new BigDecimal("1.00"))
                 .build();
 
-        // Then
+        // Then - should use refund action (LiqPay has no "unhold" action)
         Map<String, Object> params = request.getParams();
-        assertEquals("unhold", params.get("action"));
+        assertEquals("refund", params.get("action"));
         assertEquals(TEST_ORDER_ID, params.get("order_id"));
+        assertEquals(new BigDecimal("1.00"), params.get("amount"));
     }
 
     @Test
@@ -249,6 +250,6 @@ class LiqPayRequestTest {
 
     @Test
     void testAPIVersionConstant() {
-        assertEquals(7, LiqPayRequest.API_VERSION);
+        assertEquals(3, LiqPayRequest.API_VERSION);
     }
 }

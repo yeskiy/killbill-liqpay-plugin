@@ -102,11 +102,16 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
                 return Results.with("Missing signature", Status.BAD_REQUEST);
             }
 
-            logger.debug("Received data length: {}, signature: {}...",
-                    data.length(), signature.substring(0, Math.min(10, signature.length())));
+            // Log raw callback data for debugging (helpful for LiqPay support)
+            logger.info("LiqPay Callback - Raw data (base64): {}", data);
+            logger.info("LiqPay Callback - Signature: {}", signature);
 
             // Decode the callback data to get order_id and determine tenant
             Map<String, Object> callbackData = LiqPaySignature.decodeData(data);
+
+            // Log full decoded callback data
+            logger.info("LiqPay Callback - Decoded data: {}", callbackData);
+
             String orderId = (String) callbackData.get("order_id");
             String publicKey = (String) callbackData.get("public_key");
 
@@ -217,7 +222,7 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
 
             // Check if this is a verification hold that needs auto-release
             if ("hold_wait".equals(response.getStatus())) {
-                handleVerificationAutoUnhold(orderId, tenantId);
+                handleVerificationAutoRelease(orderId, tenantId);
             }
 
             // Note: We don't call notifyPendingTransactionOfStateChanged here because it requires
@@ -233,35 +238,36 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
     }
 
     /**
-     * Handles auto-unhold for verification mode.
+     * Handles auto-release for verification mode.
      * If the HPP request was created with verification=true, automatically release the hold
-     * after the card token has been captured.
+     * by refunding the held amount after the card token has been captured.
+     * Note: LiqPay does not have an "unhold" action. Hold releases use the refund API.
      */
-    private void handleVerificationAutoUnhold(String orderId, UUID tenantId) {
+    private void handleVerificationAutoRelease(String orderId, UUID tenantId) {
         try {
             // Check if this HPP request is a verification
             HppRequestRecord hppRequest = dao.getHppRequestByOrderId(orderId, tenantId);
 
             if (hppRequest != null && hppRequest.isVerification()) {
-                logger.info("Verification hold completed for order {}, auto-releasing hold", orderId);
+                logger.info("Verification hold completed for order {}, auto-releasing hold via refund", orderId);
 
-                // Create client and call unhold
+                // Create client and release hold by refunding the held amount
                 LiqPayClient client = configurationHandler.createClientForTenant(tenantId);
-                LiqPayResponse unholdResponse = client.unhold(orderId);
+                LiqPayResponse releaseResponse = client.releaseHold(orderId, hppRequest.getAmount());
 
-                logger.info("Auto-unhold completed for order {}: status={}",
-                        orderId, unholdResponse.getStatus());
+                logger.info("Auto-release completed for order {}: status={}",
+                        orderId, releaseResponse.getStatus());
 
                 // Update HPP request status to COMPLETED
                 dao.updateHppRequestStatus(orderId, tenantId, "COMPLETED");
 
             }
         } catch (LiqPayException e) {
-            logger.error("Failed to auto-unhold verification for order {}: {}",
+            logger.error("Failed to auto-release verification hold for order {}: {}",
                     orderId, e.getMessage(), e);
             // Don't fail the callback - token is already captured
             try {
-                dao.updateHppRequestStatus(orderId, tenantId, "UNHOLD_FAILED");
+                dao.updateHppRequestStatus(orderId, tenantId, "RELEASE_FAILED");
             } catch (SQLException ex) {
                 logger.error("Failed to update HPP request status", ex);
             }

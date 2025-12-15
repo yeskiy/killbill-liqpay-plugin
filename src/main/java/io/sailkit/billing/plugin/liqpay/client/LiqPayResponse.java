@@ -207,9 +207,9 @@ public class LiqPayResponse {
     // Verification code (for auth action)
     private String verifycode;
 
-    // Wait amount (for partial refunds)
+    // Wait amount flag (for refunds - can be boolean or number)
     @JsonProperty("wait_amount")
-    private BigDecimal waitAmount;
+    private Object waitAmount;
 
     // Raw response map for any unmapped fields
     private Map<String, Object> rawResponse;
@@ -482,8 +482,12 @@ public class LiqPayResponse {
         return verifycode;
     }
 
-    public BigDecimal getWaitAmount() {
+    public Object getWaitAmount() {
         return waitAmount;
+    }
+
+    public boolean isWaitingAmount() {
+        return Boolean.TRUE.equals(waitAmount) || (waitAmount instanceof Number);
     }
 
     public Map<String, Object> getRawResponse() {
@@ -712,7 +716,7 @@ public class LiqPayResponse {
         this.verifycode = verifycode;
     }
 
-    public void setWaitAmount(BigDecimal waitAmount) {
+    public void setWaitAmount(Object waitAmount) {
         this.waitAmount = waitAmount;
     }
 

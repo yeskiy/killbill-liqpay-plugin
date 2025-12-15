@@ -1,6 +1,6 @@
 # LiqPay API Documentation (API-only)
 
-**API version:** 7  
+**API version:** 7 (but use 3 in checkout calls)
 **Base URL (public checkout/widget):** https://www.liqpay.ua/api/3/  
 **Base URL (server-to-server):** https://www.liqpay.ua/api/request
 
@@ -47,9 +47,10 @@ Common parameters (appear across APIs):
 ### 2.1 Checkout (Public)
 Endpoint: `POST https://www.liqpay.ua/api/3/checkout`
 
-Required: `version`, `public_key`, `action`, `amount`, `currency`, `description`, `order_id`
+Required (for most payment actions): `version`, `public_key`, `action`, `amount`, `currency`, `description`, `order_id`
+For card verification (`action: auth`), the required set can differ; see section 2.16.
 
-`action` values: `pay`, `hold`, `subscribe`, `paydonate`, `apay`, `gpay`, `split_rules`
+`action` values (commonly used): `pay`, `hold`, `subscribe`, `paydonate`, `apay`, `gpay`, `split_rules`, `auth` (card preauth / verification)
 
 Optional (selected):
 - `language`
@@ -261,7 +262,9 @@ Edge cases: refund amount must be ≤ captured amount; repeated refunds after fu
 ### 2.11 Two-step Payment (Hold)
 - **Hold:** `action: hold`, standard card params; status `hold_wait` on success.
 - **Capture:** `action: hold_completion`, fields: `version`, `public_key`, `order_id`, `amount` (≤ held amount).
-- **Release:** `action: unhold`, fields: `version`, `public_key`, `order_id`.
+- **Release:** `action: refund`, fields: `version`, `public_key`, `order_id`, `amount` (same as held amount).
+
+> **Note:** There is no `action: unhold` API. All hold releases must use `action: refund` with the held amount.
 
 Redirect-first flow (Checkout/Widget):
 1) Create checkout with `action: hold` and `server_url`. Customer authorizes on LiqPay page and is redirected to `result_url`.
@@ -276,13 +279,14 @@ Redirect-first flow (Checkout/Widget):
   "amount": 45
 }
 ```
-4) If you must release instead:
+4) If you must release instead (refund the hold):
 ```json
 {
   "public_key": "i123",
   "version": 7,
-  "action": "unhold",
-  "order_id": "hold_2024_001"
+  "action": "refund",
+  "order_id": "hold_2024_001",
+  "amount": 50
 }
 ```
 
@@ -290,9 +294,52 @@ Server-initiated hold (no redirect): same as Card Payment but `action: hold` wit
 
 Edge cases:
 - Capture amount must be ≤ held amount; exceeding returns `err_amount_hold`.
-- After capture, unhold is not allowed; use `refund` for reversals.
+- After capture, use `refund` for reversals.
 - Holds expire per acquirer rules (commonly 7–14 days); expired holds return `payment_not_found` on capture.
 - Duplicate capture requests may return `payment_err_status` if already completed.
+
+### 2.11.1 Use Case: Token Capture via Hold + Refund
+
+A common pattern for capturing card tokens for future recurring payments without charging the customer:
+
+1. **Create hold** for a small amount (e.g., 1 UAH) with `recurringbytoken: 1`:
+```json
+{
+  "public_key": "i123",
+  "version": 3,
+  "action": "hold",
+  "amount": 1,
+  "currency": "UAH",
+  "description": "Card verification",
+  "order_id": "verify_001",
+  "recurringbytoken": "1",
+  "server_url": "https://merchant/callback"
+}
+```
+
+2. **Receive callback** with `status: hold_wait` and `card_token`:
+```json
+{
+  "status": "hold_wait",
+  "card_token": "TOKEN_VALUE",
+  "sender_card_mask2": "424242*42",
+  "sender_card_type": "visa",
+  ...
+}
+```
+
+3. **Release hold** by refunding the held amount:
+```json
+{
+  "public_key": "i123",
+  "version": 3,
+  "action": "refund",
+  "order_id": "verify_001",
+  "amount": 1
+}
+```
+
+4. **Store the token** for future recurring payments using `action: paytoken`.
 
 ### 2.12 Splitting
 Attach `split_rules` (JSON array) to supported APIs (Checkout, Widget, Card Payment, Token Payment, Two-step, QR). Item: `{ public_key, amount, commission_payer (sender|receiver), server_url, rro_info }`. Up to 5 recipients per official limits.
@@ -310,6 +357,73 @@ Use Checkout/Widget with `paytypes=cash`. Required: `phone` for terminal code, `
 ### 2.15 DCC (Dynamic Currency Conversion)
 Server Card Payment supports DCC: call with `prepare: tariffs` to fetch conversion offer, then confirm charge with returned rates; ensure customer consent is collected.
 Example prepare (step 1): see DCC quote example in 2.3. After receiving rates, repeat `action: pay` without `prepare` and include customer-approved currency choice.
+
+### 2.16 Card verification / card preauth (`action: auth` and `action: cardverification`)
+
+Purpose: verify that the card belongs to the customer using a dynamic authorization code (`verifycode`). This is described by LiqPay as a **non-financial verification transaction**.
+
+Two integration options:
+
+1) **Client-Server (no PCI DSS):** run verification through **Checkout or Widget**.
+   - Use `action: auth` in the checkout/widget payload.
+   - Add `verifycode: "Y"` to ask LiqPay to generate a dynamic code and return it in Callback.
+   - Customer enters card data on the LiqPay page/iframe.
+
+Example (Checkout auth + verifycode):
+```json
+{
+  "public_key": "i123",
+  "version": 7,
+  "action": "auth",
+  "description": "Card verification",
+  "order_id": "card_verify_0001",
+  "verifycode": "Y",
+  "result_url": "https://merchant/return",
+  "server_url": "https://merchant/callback",
+  "language": "en"
+}
+```
+
+2) **Server-Server (PCI DSS required):** call the private **Cardverification** API.
+   - Endpoint: `POST https://www.liqpay.ua/api/request`
+   - `action: cardverification`
+   - Requires PAN/CVV/expiry on your side.
+
+Example (Server-to-server cardverification):
+```json
+{
+  "public_key": "i123",
+  "version": 7,
+  "action": "cardverification",
+  "card": "4242424242424242",
+  "card_cvv": "123",
+  "card_exp_month": "12",
+  "card_exp_year": "30",
+  "description": "Card verification",
+  "ip": "203.0.113.10",
+  "order_id": "card_verify_0001",
+  "verifycode": "Y",
+  "server_url": "https://merchant/callback"
+}
+```
+
+What you get back:
+- `status`: verification result. Final: `success|failure|error`. Possible intermediate: `3ds_verify` (3DS required).
+- `verifycode`: the dynamic verification code (if you requested it).
+- `confirm_phone`: phone number used to send OTP/verify code in some flows.
+
+How to use `verifycode`:
+- Show the customer a prompt: “Enter the verification code from your bank statement / issuer channel”.
+- Compare the customer-entered code with `verifycode` from LiqPay Callback (or response for server-server).
+
+Token support:
+- LiqPay docs explicitly describe `verifycode` for `auth`, but **do not document returning `card_token`** for `auth/cardverification`.
+- If you need a reusable token, use a payment/hold flow with `recurringbytoken: 1` (and store `card_token` from callback) or use the dedicated token APIs.
+
+Edge cases:
+- The issuer may display the authorization/statement descriptor with delay; allow time before failing the verification.
+- If `status` is `3ds_verify`, you must complete 3DS (redirect/iframe flow) before expecting `success`.
+- Treat `order_id` as idempotency key: reusing it can return `order_id_duplicate`.
 
 ---
 

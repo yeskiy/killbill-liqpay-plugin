@@ -22,7 +22,8 @@ import java.util.Map;
 
 /**
  * Builder for LiqPay API requests.
- * Supports all main LiqPay actions: pay, hold, hold_completion, unhold, refund, paytoken, status.
+ * Supports all main LiqPay actions: pay, hold, hold_completion, refund, paytoken, status.
+ * Note: There is no "unhold" action in LiqPay API. Hold releases use "refund" action.
  */
 public class LiqPayRequest {
 
@@ -292,13 +293,20 @@ public class LiqPayRequest {
     }
 
     /**
-     * Creates an unhold (void) request.
+     * Creates a hold release request.
+     * Note: LiqPay does not have an "unhold" action. Hold releases use the refund API.
+     *
+     * @param publicKey LiqPay public key
+     * @param orderId Original hold order ID
+     * @param amount Amount to release (must match held amount)
+     * @return Builder for the refund request
      */
-    public static Builder unhold(String publicKey, String orderId) {
+    public static Builder releaseHold(String publicKey, String orderId, BigDecimal amount) {
         return builder()
                 .publicKey(publicKey)
-                .action("unhold")
-                .orderId(orderId);
+                .action("refund")
+                .orderId(orderId)
+                .amount(amount);
     }
 
     /**

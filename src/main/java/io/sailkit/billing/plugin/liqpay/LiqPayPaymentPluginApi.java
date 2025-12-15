@@ -292,15 +292,20 @@ public class LiqPayPaymentPluginApi implements PaymentPluginApi {
         UUID tenantId = context.getTenantId();
 
         try {
-            // Find the original hold order ID
+            // Find the original hold order ID and amount
             String originalOrderId = getPropertyValue("original_order_id", properties, null);
-            if (originalOrderId == null) {
-                List<LiqPayResponseRecord> responses = dao.getResponsesForPayment(kbPaymentId, tenantId);
-                for (LiqPayResponseRecord resp : responses) {
-                    if ("AUTHORIZE".equals(resp.getTransactionType()) && "hold_wait".equals(resp.getStatus())) {
+            BigDecimal holdAmount = null;
+            String holdCurrency = null;
+
+            List<LiqPayResponseRecord> responses = dao.getResponsesForPayment(kbPaymentId, tenantId);
+            for (LiqPayResponseRecord resp : responses) {
+                if ("AUTHORIZE".equals(resp.getTransactionType()) && "hold_wait".equals(resp.getStatus())) {
+                    if (originalOrderId == null) {
                         originalOrderId = resp.getLiqpayOrderId();
-                        break;
                     }
+                    holdAmount = resp.getAmount();
+                    holdCurrency = resp.getCurrency();
+                    break;
                 }
             }
 
@@ -308,14 +313,22 @@ public class LiqPayPaymentPluginApi implements PaymentPluginApi {
                 throw new PaymentPluginApiException("", "No authorization found to void");
             }
 
+            if (holdAmount == null) {
+                throw new PaymentPluginApiException("", "Could not determine hold amount for void");
+            }
+
+            // Release hold by refunding the held amount
+            // Note: LiqPay does not have an "unhold" action. Hold releases use the refund API.
             LiqPayClient client = configurationHandler.createClientForTenant(tenantId);
-            LiqPayResponse response = client.unhold(originalOrderId);
+            LiqPayResponse response = client.releaseHold(originalOrderId, holdAmount);
+
+            Currency currency = holdCurrency != null ? Currency.valueOf(holdCurrency) : null;
 
             dao.saveResponse(kbAccountId, kbPaymentId, kbTransactionId, kbPaymentMethodId, tenantId,
                     TransactionType.VOID.name(), response, response.toString());
 
             return LiqPayTransactionInfoPlugin.fromResponse(kbPaymentId, kbTransactionId,
-                    TransactionType.VOID, null, null, response, now);
+                    TransactionType.VOID, holdAmount, currency, response, now);
 
         } catch (LiqPayException e) {
             logger.error("LiqPay void failed", e);
@@ -695,9 +708,15 @@ public class LiqPayPaymentPluginApi implements PaymentPluginApi {
             params.put("sandbox", 1);
         }
 
+        // Log the full hold request payload (helpful for LiqPay support)
+        logger.info("buildFormDescriptor - HOLD request params: {}", params);
+
         // 6. Generate data and signature
         String data = LiqPaySignature.encodeData(params);
         String signature = LiqPaySignature.createSignature(config.getPrivateKey(), data);
+
+        logger.info("buildFormDescriptor - HOLD request data (base64): {}", data);
+        logger.info("buildFormDescriptor - HOLD request signature: {}", signature);
 
         // 7. Create KillBill payment with PENDING status and save HPP request
         UUID kbPaymentId = null;
