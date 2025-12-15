@@ -32,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.sailkit.billing.plugin.liqpay.client.LiqPayResponse;
+import io.sailkit.billing.plugin.liqpay.dao.model.HppRequestRecord;
 import io.sailkit.billing.plugin.liqpay.dao.model.LiqPayPaymentMethodRecord;
 import io.sailkit.billing.plugin.liqpay.dao.model.LiqPayResponseRecord;
 import io.sailkit.billing.plugin.liqpay.dao.model.PendingTransactionRecord;
@@ -548,6 +549,143 @@ public class LiqPayDao {
         record.setTransactionType(rs.getString("transaction_type"));
         record.setAmount(rs.getBigDecimal("amount"));
         record.setCurrency(rs.getString("currency"));
+        record.setStatus(rs.getString("status"));
+        record.setCreatedDate(rs.getTimestamp("created_date"));
+        record.setUpdatedDate(rs.getTimestamp("updated_date"));
+
+        return record;
+    }
+
+    // HPP (Hosted Payment Page) Request Operations
+
+    /**
+     * Creates an HPP request record for buildFormDescriptor sessions.
+     * Used to track checkout redirect/embed flows and verification mode.
+     *
+     * @param kbAccountId      KillBill account ID
+     * @param kbPaymentMethodId KillBill payment method ID (optional)
+     * @param kbTenantId       KillBill tenant ID
+     * @param sessionId        Internal session ID (UUID)
+     * @param orderId          LiqPay order ID (hpp-{uuid})
+     * @param mode             Display mode: redirect, embed, popup
+     * @param isVerification   True if this is a card verification (auto-unhold)
+     * @param amount           Transaction amount
+     * @param currency         Currency code
+     * @param additionalData   JSON with data, signature, urls
+     * @return The session ID
+     */
+    public String addHppRequest(UUID kbAccountId, UUID kbPaymentMethodId, UUID kbTenantId,
+                                String sessionId, String orderId, String mode, boolean isVerification,
+                                BigDecimal amount, String currency, String additionalData) throws SQLException {
+        String sql = "INSERT INTO liqpay_hpp_requests " +
+                "(kb_account_id, kb_payment_method_id, kb_tenant_id, session_id, order_id, " +
+                "mode, is_verification, amount, currency, additional_data, status) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED')";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, kbAccountId.toString());
+            stmt.setString(2, kbPaymentMethodId != null ? kbPaymentMethodId.toString() : null);
+            stmt.setString(3, kbTenantId.toString());
+            stmt.setString(4, sessionId);
+            stmt.setString(5, orderId);
+            stmt.setString(6, mode);
+            stmt.setBoolean(7, isVerification);
+            stmt.setBigDecimal(8, amount);
+            stmt.setString(9, currency);
+            stmt.setString(10, additionalData);
+
+            stmt.executeUpdate();
+            logger.debug("Created HPP request: sessionId={}, orderId={}, mode={}, verification={}",
+                    sessionId, orderId, mode, isVerification);
+        }
+        return sessionId;
+    }
+
+    /**
+     * Gets an HPP request by order ID.
+     * Used in callback handling to check verification mode.
+     */
+    public HppRequestRecord getHppRequestByOrderId(String orderId, UUID kbTenantId) throws SQLException {
+        String sql = "SELECT * FROM liqpay_hpp_requests WHERE order_id = ? AND kb_tenant_id = ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, orderId);
+            stmt.setString(2, kbTenantId.toString());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapHppRequestRecord(rs);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Gets an HPP request by session ID.
+     */
+    public HppRequestRecord getHppRequestBySessionId(String sessionId, UUID kbTenantId) throws SQLException {
+        String sql = "SELECT * FROM liqpay_hpp_requests WHERE session_id = ? AND kb_tenant_id = ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, sessionId);
+            stmt.setString(2, kbTenantId.toString());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapHppRequestRecord(rs);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Updates HPP request status.
+     */
+    public void updateHppRequestStatus(String orderId, UUID kbTenantId, String status) throws SQLException {
+        String sql = "UPDATE liqpay_hpp_requests SET " +
+                "status = ?, updated_date = CURRENT_TIMESTAMP " +
+                "WHERE order_id = ? AND kb_tenant_id = ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, status);
+            stmt.setString(2, orderId);
+            stmt.setString(3, kbTenantId.toString());
+
+            stmt.executeUpdate();
+            logger.debug("Updated HPP request status: orderId={}, status={}", orderId, status);
+        }
+    }
+
+    private HppRequestRecord mapHppRequestRecord(ResultSet rs) throws SQLException {
+        HppRequestRecord record = new HppRequestRecord();
+        record.setRecordId(rs.getLong("record_id"));
+
+        String accountId = rs.getString("kb_account_id");
+        record.setKbAccountId(accountId != null ? UUID.fromString(accountId) : null);
+
+        String paymentMethodId = rs.getString("kb_payment_method_id");
+        record.setKbPaymentMethodId(paymentMethodId != null ? UUID.fromString(paymentMethodId) : null);
+
+        String tenantId = rs.getString("kb_tenant_id");
+        record.setKbTenantId(tenantId != null ? UUID.fromString(tenantId) : null);
+
+        record.setSessionId(rs.getString("session_id"));
+        record.setOrderId(rs.getString("order_id"));
+        record.setMode(rs.getString("mode"));
+        record.setVerification(rs.getBoolean("is_verification"));
+        record.setAmount(rs.getBigDecimal("amount"));
+        record.setCurrency(rs.getString("currency"));
+        record.setAdditionalData(rs.getString("additional_data"));
         record.setStatus(rs.getString("status"));
         record.setCreatedDate(rs.getTimestamp("created_date"));
         record.setUpdatedDate(rs.getTimestamp("updated_date"));

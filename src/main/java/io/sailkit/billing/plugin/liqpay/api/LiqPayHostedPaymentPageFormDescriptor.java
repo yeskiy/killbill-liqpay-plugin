@@ -28,7 +28,21 @@ import io.sailkit.billing.plugin.liqpay.client.LiqPayClient;
 
 /**
  * Implementation of HostedPaymentPageFormDescriptor for LiqPay checkout.
- * Supports both redirect-based checkout and embedded widget.
+ * Supports redirect-based checkout, embedded widget, and popup modes.
+ *
+ * Form fields returned:
+ * - data: Base64-encoded JSON payload
+ * - signature: HMAC-SHA1 signature
+ * - session_id: Internal session ID for tracking
+ * - order_id: LiqPay order ID (hpp-{uuid})
+ *
+ * Properties returned:
+ * - mode: Display mode (redirect/embed/popup)
+ * - checkout_url: Full checkout URL (for redirect mode)
+ * - widget_data: Data for widget initialization
+ * - widget_signature: Signature for widget
+ * - widget_host: Widget script URL
+ * - public_key: LiqPay public key
  */
 public class LiqPayHostedPaymentPageFormDescriptor implements HostedPaymentPageFormDescriptor {
 
@@ -44,14 +58,41 @@ public class LiqPayHostedPaymentPageFormDescriptor implements HostedPaymentPageF
         this.formUrl = LiqPayClient.CHECKOUT_URL;
 
         this.formFields = new ArrayList<>();
-        this.formFields.add(new PluginProperty("data", formData.get("data"), false));
-        this.formFields.add(new PluginProperty("signature", formData.get("signature"), false));
-
         this.properties = new ArrayList<>();
-        // Add widget-specific properties
-        this.properties.add(new PluginProperty("widget_data", formData.get("data"), false));
-        this.properties.add(new PluginProperty("widget_signature", formData.get("signature"), false));
-        this.properties.add(new PluginProperty("checkout_url", LiqPayClient.CHECKOUT_URL, false));
+
+        // Core form fields (for HTML form submission)
+        addFormField("data", formData.get("data"));
+        addFormField("signature", formData.get("signature"));
+
+        // Session tracking fields
+        addFormField("session_id", formData.get("session_id"));
+        addFormField("order_id", formData.get("order_id"));
+
+        // Properties for client usage
+        addProperty("mode", formData.get("mode"));
+        addProperty("widget_data", formData.get("data"));
+        addProperty("widget_signature", formData.get("signature"));
+
+        // Checkout URL for redirect mode
+        if (formData.containsKey("checkout_url") && formData.get("checkout_url") != null) {
+            addProperty("checkout_url", formData.get("checkout_url"));
+        }
+
+        // Widget configuration
+        addProperty("widget_host", formData.getOrDefault("widget_host", "https://static.liqpay.ua/libjs/checkout.js"));
+        addProperty("public_key", formData.get("public_key"));
+    }
+
+    private void addFormField(String key, String value) {
+        if (value != null) {
+            this.formFields.add(new PluginProperty(key, value, false));
+        }
+    }
+
+    private void addProperty(String key, String value) {
+        if (value != null) {
+            this.properties.add(new PluginProperty(key, value, false));
+        }
     }
 
     @Override

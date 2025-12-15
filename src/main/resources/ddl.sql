@@ -121,3 +121,42 @@ CREATE TABLE liqpay_pending_transactions (
 CREATE INDEX idx_liqpay_pending_tx ON liqpay_pending_transactions(kb_transaction_id, kb_tenant_id);
 CREATE INDEX idx_liqpay_pending_order ON liqpay_pending_transactions(order_id);
 CREATE INDEX idx_liqpay_pending_status ON liqpay_pending_transactions(status);
+
+
+-- 4. Track hosted payment page (HPP) requests for buildFormDescriptor flow
+-- Stores session data for checkout redirect/embed flows
+CREATE TABLE liqpay_hpp_requests (
+    record_id SERIAL PRIMARY KEY,
+
+    -- KillBill references
+    kb_account_id CHAR(36) NOT NULL,
+    kb_payment_method_id CHAR(36),
+    kb_tenant_id CHAR(36) NOT NULL,
+
+    -- Session identifiers
+    session_id VARCHAR(255) NOT NULL,     -- Internal session ID (UUID)
+    order_id VARCHAR(255) NOT NULL,       -- LiqPay order ID (hpp-{uuid})
+
+    -- Request configuration
+    mode VARCHAR(20) DEFAULT 'redirect',  -- redirect, embed, popup
+    is_verification BOOLEAN DEFAULT FALSE, -- true = card verification (auto-unhold)
+    amount DECIMAL(15,5),
+    currency CHAR(3),
+
+    -- Additional data (JSON) - stores data, signature, urls
+    additional_data TEXT,
+
+    -- Status tracking
+    status VARCHAR(32) DEFAULT 'CREATED', -- CREATED, COMPLETED, FAILED, EXPIRED
+
+    created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (session_id, kb_tenant_id),
+    UNIQUE (order_id, kb_tenant_id)
+);
+
+CREATE INDEX idx_liqpay_hpp_session ON liqpay_hpp_requests(session_id);
+CREATE INDEX idx_liqpay_hpp_order ON liqpay_hpp_requests(order_id);
+CREATE INDEX idx_liqpay_hpp_account ON liqpay_hpp_requests(kb_account_id, kb_tenant_id);
+CREATE INDEX idx_liqpay_hpp_status ON liqpay_hpp_requests(status);

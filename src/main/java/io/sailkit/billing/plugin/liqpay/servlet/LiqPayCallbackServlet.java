@@ -23,31 +23,26 @@ import java.util.UUID;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import org.joda.time.DateTime;
 import org.jooby.Result;
 import org.jooby.Results;
 import org.jooby.Status;
 import org.jooby.mvc.Consumes;
 import org.jooby.mvc.POST;
 import org.jooby.mvc.Path;
-import org.killbill.billing.account.api.Account;
-import org.killbill.billing.account.api.AccountApiException;
 import org.killbill.billing.osgi.libs.killbill.OSGIKillbillAPI;
-import org.killbill.billing.payment.api.PaymentApi;
-import org.killbill.billing.payment.api.PaymentApiException;
 import org.killbill.billing.plugin.core.resources.PluginHealthcheck;
-import org.killbill.billing.util.callcontext.CallContext;
-import org.killbill.billing.util.callcontext.CallOrigin;
-import org.killbill.billing.util.callcontext.UserType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.sailkit.billing.plugin.liqpay.LiqPayConfig;
 import io.sailkit.billing.plugin.liqpay.LiqPayConfigurationHandler;
 import io.sailkit.billing.plugin.liqpay.api.LiqPayStatusMapper;
+import io.sailkit.billing.plugin.liqpay.client.LiqPayClient;
+import io.sailkit.billing.plugin.liqpay.client.LiqPayException;
 import io.sailkit.billing.plugin.liqpay.client.LiqPayResponse;
 import io.sailkit.billing.plugin.liqpay.client.LiqPaySignature;
 import io.sailkit.billing.plugin.liqpay.dao.LiqPayDao;
+import io.sailkit.billing.plugin.liqpay.dao.model.HppRequestRecord;
 import io.sailkit.billing.plugin.liqpay.dao.model.PendingTransactionRecord;
 
 /**
@@ -173,6 +168,7 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
 
     /**
      * Processes the callback, updates the database, and notifies KillBill.
+     * For verification holds, automatically calls unhold to release the $1 hold after token capture.
      */
     private void processCallback(PendingTransactionRecord pendingTx, LiqPayResponse response,
                                   UUID tenantId, String rawJson) {
@@ -219,10 +215,15 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
                 );
             }
 
-            // Notify KillBill about the payment state change
-            if (isFinal && pendingTx.getKbPaymentId() != null && pendingTx.getKbTransactionId() != null) {
-                notifyKillBillPaymentStateChange(pendingTx, isSuccess);
+            // Check if this is a verification hold that needs auto-release
+            if ("hold_wait".equals(response.getStatus())) {
+                handleVerificationAutoUnhold(orderId, tenantId);
             }
+
+            // Note: We don't call notifyPendingTransactionOfStateChanged here because it requires
+            // authentication that external callbacks don't have. Instead, KillBill's Janitor will
+            // call getPaymentInfo() which returns the updated status from our liqpay_responses table.
+            // This is the same pattern used by the Stripe plugin.
 
             logger.info("Callback processed successfully for order {}, status={}", orderId, response.getStatus());
 
@@ -232,102 +233,41 @@ public class LiqPayCallbackServlet extends PluginHealthcheck {
     }
 
     /**
-     * Notifies KillBill about the payment transaction state change.
-     * This updates the payment status from PENDING to SUCCESS or FAILURE.
+     * Handles auto-unhold for verification mode.
+     * If the HPP request was created with verification=true, automatically release the hold
+     * after the card token has been captured.
      */
-    private void notifyKillBillPaymentStateChange(PendingTransactionRecord pendingTx, boolean isSuccess) {
+    private void handleVerificationAutoUnhold(String orderId, UUID tenantId) {
         try {
-            logger.info("Notifying KillBill about payment state change: paymentId={}, transactionId={}, isSuccess={}",
-                    pendingTx.getKbPaymentId(), pendingTx.getKbTransactionId(), isSuccess);
+            // Check if this HPP request is a verification
+            HppRequestRecord hppRequest = dao.getHppRequestByOrderId(orderId, tenantId);
 
-            // Create a CallContext for the API call
-            CallContext context = createCallContext(pendingTx.getKbTenantId(), pendingTx.getKbAccountId());
+            if (hppRequest != null && hppRequest.isVerification()) {
+                logger.info("Verification hold completed for order {}, auto-releasing hold", orderId);
 
-            // Get the Account object (required by the API)
-            Account account = killbillAPI.getAccountUserApi().getAccountById(
-                    pendingTx.getKbAccountId(), context);
+                // Create client and call unhold
+                LiqPayClient client = configurationHandler.createClientForTenant(tenantId);
+                LiqPayResponse unholdResponse = client.unhold(orderId);
 
-            // Get the PaymentApi
-            PaymentApi paymentApi = killbillAPI.getPaymentApi();
+                logger.info("Auto-unhold completed for order {}: status={}",
+                        orderId, unholdResponse.getStatus());
 
-            // Notify KillBill that the pending transaction has completed
-            // API signature: notifyPendingTransactionOfStateChanged(Account, UUID transactionId, boolean isSuccess, CallContext)
-            paymentApi.notifyPendingTransactionOfStateChanged(
-                    account,
-                    pendingTx.getKbTransactionId(),
-                    isSuccess,
-                    context
-            );
+                // Update HPP request status to COMPLETED
+                dao.updateHppRequestStatus(orderId, tenantId, "COMPLETED");
 
-            logger.info("Successfully notified KillBill about payment state change");
-
-        } catch (PaymentApiException e) {
-            logger.error("Failed to notify KillBill about payment state change: {}",
-                    e.getMessage(), e);
-        } catch (AccountApiException e) {
-            logger.error("Failed to get account for payment state change notification: {}",
-                    e.getMessage(), e);
-        } catch (Exception e) {
-            logger.error("Unexpected error notifying KillBill", e);
+            }
+        } catch (LiqPayException e) {
+            logger.error("Failed to auto-unhold verification for order {}: {}",
+                    orderId, e.getMessage(), e);
+            // Don't fail the callback - token is already captured
+            try {
+                dao.updateHppRequestStatus(orderId, tenantId, "UNHOLD_FAILED");
+            } catch (SQLException ex) {
+                logger.error("Failed to update HPP request status", ex);
+            }
+        } catch (SQLException e) {
+            logger.error("Database error checking verification status for order {}", orderId, e);
         }
-    }
-
-    /**
-     * Creates a CallContext for KillBill API calls.
-     */
-    private CallContext createCallContext(UUID tenantId, UUID accountId) {
-        final DateTime now = new DateTime();
-        return new CallContext() {
-            @Override
-            public UUID getUserToken() {
-                return UUID.randomUUID();
-            }
-
-            @Override
-            public String getUserName() {
-                return "LiqPayCallback";
-            }
-
-            @Override
-            public CallOrigin getCallOrigin() {
-                return CallOrigin.EXTERNAL;
-            }
-
-            @Override
-            public UserType getUserType() {
-                return UserType.SYSTEM;
-            }
-
-            @Override
-            public String getReasonCode() {
-                return "LiqPay payment callback";
-            }
-
-            @Override
-            public String getComments() {
-                return "Payment status updated via LiqPay callback";
-            }
-
-            @Override
-            public DateTime getCreatedDate() {
-                return now;
-            }
-
-            @Override
-            public DateTime getUpdatedDate() {
-                return now;
-            }
-
-            @Override
-            public UUID getTenantId() {
-                return tenantId;
-            }
-
-            @Override
-            public UUID getAccountId() {
-                return accountId;
-            }
-        };
     }
 
     /**

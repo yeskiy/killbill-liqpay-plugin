@@ -26,7 +26,7 @@ import java.util.Map;
  */
 public class LiqPayRequest {
 
-    public static final int API_VERSION = 7;
+    public static final int API_VERSION = 3;
 
     private final Map<String, Object> params = new HashMap<>();
 
