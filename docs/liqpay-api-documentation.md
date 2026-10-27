@@ -49,13 +49,13 @@ Compute the signature on the exact base64 text that you send or receive.
 
 | Item | Value |
 |---|---|
-| `private_key` | `a4825234f4bae72a0be04eafe9e8e2bada209255` |
+| `private_key` | `example_private_key` |
 | `json_string` | `{"public_key":"i00000000","version":7,"action":"pay","amount":"3","currency":"UAH","description":"test","order_id":"000001"}` |
 | `data` | `eyJwdWJsaWNfa2V5IjoiaTAwMDAwMDAwIiwidmVyc2lvbiI6NywiYWN0aW9uIjoicGF5IiwiYW1vdW50IjoiMyIsImN1cnJlbmN5IjoiVUFIIiwiZGVzY3JpcHRpb24iOiJ0ZXN0Iiwib3JkZXJfaWQiOiIwMDAwMDEifQ==` |
 | `sign_string` | `private_key + data + private_key` |
-| `signature` | `0adgJ8F2Ds5HCVkcz4AlmdLMRoIJf7IxsL3QmeFRz/s=` |
+| `signature` | `NLv3yzn9fSmNhetxXRVjduEkv6gLl+P/t3zwusREiio=` |
 
-The private key above is the public example key of the LiqPay docs, not a merchant key.
+The private key above is a made-up example, not a merchant key.
 
 Common parameters:
 - `version` (Number, required): 7
