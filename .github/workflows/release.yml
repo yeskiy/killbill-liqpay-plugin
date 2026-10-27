@@ -13,21 +13,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v7.0.1
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6.1.0
         with:
           distribution: temurin
           java-version: 11
           cache: maven
-      - name: Build plugin
+      - name: Build and test
         run: mvn -B verify
+      - name: Name the jar and its checksum
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jar="target/liqpay-plugin-${version}.jar"
+          test -f "$jar" || { echo "missing $jar, the pom version must match the tag"; exit 1; }
+          (cd target && sha256sum "liqpay-plugin-${version}.jar" > "liqpay-plugin-${version}.jar.sha256")
+          echo "JAR=$jar" >> "$GITHUB_ENV"
       - name: Upload release assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: |
-            target/liqpay-plugin-*.jar
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            ${{ env.JAR }}
+            ${{ env.JAR }}.sha256

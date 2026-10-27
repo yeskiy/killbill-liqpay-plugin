@@ -1,74 +1,102 @@
 # LiqPay API Documentation (API-only)
 
-**API version:** 7 (but use 3 in checkout calls)
-**Base URL (public checkout/widget):** https://www.liqpay.ua/api/3/  
-**Base URL (server-to-server):** https://www.liqpay.ua/api/request
+**API version:** 7 for every request, checkout included
+**Request signature:** `base64(sha3-256(private_key + data + private_key))`
+**Base URL (client to server, checkout):** `https://www.liqpay.ua/api/3/checkout`
+**Base URL (server to server):** `https://www.liqpay.ua/api/request`
 
-This document is trimmed to API behavior only: request envelopes, required/optional parameters, statuses, and verification flows. SDK references and marketing content are intentionally omitted.
+This file holds API behavior only: request envelopes, parameters, statuses and verification flows. It leaves out SDK references and marketing text.
+
+Scan date: 2026-10. Each section names the live page that it comes from. A section marked "not re-read" keeps the text of the 2025-12 scan.
 
 ---
 
-## 1. Requests & Signatures
+## Changes since the 2025-12 scan
 
-All API calls post two fields:
-- `data`: base64-encoded JSON of request parameters
-- `signature`: request signature
+| Item | 2025-12 text | Live text (2026-10) |
+|---|---|---|
+| Request signature | `base64_encode(sha1(private_key + data + private_key))` for a v7 request | `base64_encode(sha3-256(private_key + data + private_key))` for every request. Source: the "self-integration" block of the checkout page |
+| Version in checkout | "use 3 in checkout calls" | `version` is 7 in every parameter table. The doc test vector sends version 7 to `api/3/checkout` |
+| Checkout endpoint | `https://www.liqpay.ua/api/3/` | `POST https://www.liqpay.ua/api/3/checkout` (client to server). Server to server: `https://www.liqpay.ua/api/request` |
+| `expired_date` | `yyyy-MM-dd HH:mm:ss` UTC | Same format, UTC, example `2016-04-24 00:00:00` |
+| SDK samples | - | The BASH, PHP and other SDK samples on the live pages still show `version: 3` and SHA-1. The parameter tables and the self-integration block show version 7 and SHA3-256. This file follows the tables |
+| `sandbox` request parameter | `sandbox: 1` turns on test mode | Not in any live parameter table. The testing page says that test mode comes from keys that start with `sandbox_` |
+| `sandbox` status | - | Not in the live status lists of the callback and status pages |
+| `unhold` action | "There is no `action: unhold` API" | Still no `unhold`. The two-step page says: "Unblock funds by using the Returns API" (`action: refund`) |
+| Callback retries | "LiqPay retries with backoff until HTTP 200 is received" | The callback page says nothing about retries. It says: use the Payment Status API to get the current status before the final callback |
+| Refund response | Statuses `reversed`, `wait_accept` | Fields `result` (`ok`, `error`), `wait_amount` (boolean), `payment_id`, `status`. Final statuses: `error`, `failure`, `reversed`, `success` |
+| `try_again` | Not listed | Listed on the status page: "Payment unsuccessful. Client can try again" |
+| Chargeback | Not covered | No chargeback or dispute status, action or field on the callback, status, refund or error pages. The two-step page says only that a bank "may dispute the transaction" after the hold period |
+| Date fields in answers | Not covered | `create_date` and `end_date` are Unix time in milliseconds, sent as strings (status page example) |
+| Number fields in answers | Not covered | The status page example sends `amount` and `payment_id` as JSON strings |
+| `paytoken` | `ip` required | `ip` is still required ("Client IP") |
 
-**Request signature (v7):** `base64_encode(sha1(private_key + data + private_key))`
+---
 
-**Callback signature (v7):** `base64_encode(sha3-256(private_key + data + private_key))`
+## 1. Requests and signatures
 
-> Always compute signatures on the exact base64 payload you send/receive.
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/checkout?tab=1 (self-integration block), scan 2026-10.
 
-Minimal envelope:
-```json
-{
-  "data": "BASE64_JSON",
-  "signature": "BASE64_SIGNATURE"
-}
-```
+Every API call posts two form fields:
+- `data`: base64 of the JSON string of the request parameters.
+- `signature`: `base64_encode(sha3-256(private_key + data + private_key))`. The SHA3-256 hash is the 32-byte binary value.
 
-Common parameters (appear across APIs):
+The callback uses the same signature (section 7).
+
+Compute the signature on the exact base64 text that you send or receive.
+
+### Doc test vector
+
+| Item | Value |
+|---|---|
+| `private_key` | `a4825234f4bae72a0be04eafe9e8e2bada209255` |
+| `json_string` | `{"public_key":"i00000000","version":7,"action":"pay","amount":"3","currency":"UAH","description":"test","order_id":"000001"}` |
+| `data` | `eyJwdWJsaWNfa2V5IjoiaTAwMDAwMDAwIiwidmVyc2lvbiI6NywiYWN0aW9uIjoicGF5IiwiYW1vdW50IjoiMyIsImN1cnJlbmN5IjoiVUFIIiwiZGVzY3JpcHRpb24iOiJ0ZXN0Iiwib3JkZXJfaWQiOiIwMDAwMDEifQ==` |
+| `sign_string` | `private_key + data + private_key` |
+| `signature` | `0adgJ8F2Ds5HCVkcz4AlmdLMRoIJf7IxsL3QmeFRz/s=` |
+
+The private key above is the public example key of the LiqPay docs, not a merchant key.
+
+Common parameters:
 - `version` (Number, required): 7
 - `public_key` (String, required)
-- `order_id` (String, required): unique per merchant (≤255 chars)
-- `description` (String, required)
-- `amount` (Number, required when charging)
-- `currency` (String): `UAH`, `USD`, `EUR`
+- `action` (String, required)
+- `order_id` (String, required): unique for each merchant, 255 characters or less
+- `description` (String, required for payments)
+- `amount` (Number, required for payments): for example `5`, `7.34`
+- `currency` (String): `USD`, `EUR`, `UAH`. LiqPay adds other currencies on request of the company
 - `language` (String): `uk`, `en`
-- `server_url` (String): callback URL (≤510 chars)
-- `result_url` (String): customer redirect URL (≤510 chars)
-- `sandbox` (Number): `1` to enable sandbox/test mode
+- `server_url` (String): callback URL, 510 characters or less
+- `result_url` (String): the URL that the buyer returns to, 510 characters or less
 
 ---
 
-## 2. Internet Acquiring APIs
+## 2. Internet acquiring APIs
 
-### 2.1 Checkout (Public)
-Endpoint: `POST https://www.liqpay.ua/api/3/checkout`
+### 2.1 Checkout (public)
 
-Required (for most payment actions): `version`, `public_key`, `action`, `amount`, `currency`, `description`, `order_id`
-For card verification (`action: auth`), the required set can differ; see section 2.16.
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/checkout?tab=1, scan 2026-10.
 
-`action` values (commonly used): `pay`, `hold`, `subscribe`, `paydonate`, `apay`, `gpay`, `split_rules`, `auth` (card preauth / verification)
+Endpoint: `POST https://www.liqpay.ua/api/3/checkout`, as an auto-submit HTML form with the hidden fields `data` and `signature`.
 
-Optional (selected):
-- `language`
+Required: `version`, `public_key`, `action`, `amount`, `currency`, `description`, `order_id`.
+
+`action` values: `pay` (payment), `hold` (hold on the account of the sender), `subscribe` (regular payment), `paydonate` (donation).
+
+Optional:
+- `expired_date`: the date and time until which the customer can pay, UTC, format `2016-04-24 00:00:00`
+- `language`: `uk`, `en`
+- `paytypes`: `apay`, `gpay`, `card`, `privat24`, `moment_part`, `paypart`, `cash`, `invoice`, `qr`. Without it, the shop settings apply
 - `result_url`, `server_url`
-- `expired_date` (`yyyy-MM-dd HH:mm:ss` UTC)
-- `paytypes`: comma list `apay,gpay,card,privat24,moment_part,paypart,cash,invoice,qr`
-- `sandbox`: `1`
-- `rro_info` object: `{ items: [{amount, price, cost, id}], delivery_emails: [] }`
-- `split_rules`: JSON array of recipients `{ public_key, amount, commission_payer (sender|receiver), server_url, rro_info }`
-- `customer`, `recurringbytoken:1`, `customer_user_id`
-- Subscription: `subscribe:1`, `subscribe_date_start` (UTC), `subscribe_periodicity` (`day|week|month|year`)
-- Sender: `sender_first_name`, `sender_last_name`, `sender_city`, `sender_address`, `sender_country_code` (ISO 3166-1 numeric), `sender_postal_code`
-- Other: `info`, `product_*`, `dae`, `verifycode` (for `auth`), `prepare` (`tariffs` for DCC quote)
+- `verifycode`: `Y`. Works for `action = auth`
+- `rro_info` (fiscal data): `items` (`amount`, `cost`, `id`, `price`), `delivery_emails`
+- `split_rules`: JSON array of `{public_key, amount, commission_payer, server_url, rro_info}`
+- Sender: `sender_address`, `sender_city`, `sender_country_code` (ISO 3166-1 numeric), `sender_first_name`, `sender_last_name`, `sender_postal_code`
+- Regular payment: `subscribe` (`1`), `subscribe_date_start` (UTC), `subscribe_periodicity` (`day`, `week`, `month`, `year`)
+- 1-click: `customer` (100 characters or less), `recurringbytoken` (`1` returns `card_token` in the callback), `customer_user_id`
+- Other: `dae` (MCC 4511), `info`, `product_category` (25), `product_description` (500), `product_name` (100), `product_url` (2000)
 
-Response: see Callback fields and payment statuses.
-
-Examples:
-- Simple card payment:
+Example (simple card payment):
 ```json
 {
   "public_key": "i123",
@@ -78,145 +106,61 @@ Examples:
   "currency": "USD",
   "description": "Order 1001",
   "order_id": "order_1001",
+  "expired_date": "2026-10-18 12:30:00",
   "result_url": "https://merchant/success",
   "server_url": "https://merchant/callback"
 }
 ```
-- Hold via checkout (customer authorizes on LiqPay page, then you capture server-side):
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "hold",
-  "amount": 50,
-  "currency": "UAH",
-  "description": "Hotel hold",
-  "order_id": "hold_2024_001",
-  "result_url": "https://merchant/return",
-  "server_url": "https://merchant/callback"
-}
-```
-Edge cases: duplicate `order_id` yields `order_id_duplicate`; `expired_date` too soon cancels unpaid invoices; mismatch between `split_rules.amount` total and `amount` returns `err_split_amount`.
 
-### 2.2 Payment Widget (Public)
-Uses same `data` payload as Checkout. Embed parameters:
-- `data`, `signature` (required)
-- `embedTo` (selector), `mode` (`embed|popup`), `language`
-Script: `//static.liqpay.ua/libjs/checkout.js`
+Edge cases: a repeated `order_id` gives `order_id_duplicate`. A `split_rules` total that differs from `amount` gives `err_split_amount`.
 
-Modes and redirects:
-- Redirect (full page): use Checkout form post; LiqPay hosts the page and redirects to `result_url` when done. Card entry happens on LiqPay.
-- Widget popup: `mode: "popup"` opens LiqPay in an overlay iframe; LiqPay handles card entry in its domain. No page navigation; you get events (`liqpay.callback`, `liqpay.close`). `result_url` is still used if the flow leaves to external 3DS/bank page; after completion LiqPay can navigate the top window to `result_url` or fall back to the popup closing with `status` in the callback.
-- Widget embed: `mode: "embed"` renders an iframe inside your page (`embedTo`). Card data is entered inside the LiqPay iframe, not your DOM (keeps PCI burden off you). `result_url` behaves like popup: used only if the flow needs a full-page step (e.g., bank redirect); otherwise rely on `liqpay.callback` event for final status.
+### 2.2 Payment widget (public)
 
-Iframe/card entry notes:
-- You cannot host LiqPay inputs in your own form; card fields live inside the LiqPay iframe delivered by `checkout.js` (PCI segregation). If you need to collect PAN on your page, use the server-to-server Card Payment API and meet PCI requirements.
-- Do not wrap the widget iframe in additional iframes that block top-level redirects; 3DS/bank steps may require top navigation.
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/widget, not re-read in 2026-10.
 
-Example (embed mode collecting card in LiqPay iframe):
-```html
-<div id="liqpay_checkout"></div>
-<script>
-window.LiqPayCheckoutCallback = function() {
-  LiqPayCheckout.init({
-    data: "BASE64_DATA",
-    signature: "BASE64_SIGNATURE",
-    embedTo: "#liqpay_checkout",
-    mode: "embed",
-    language: "en"
-  }).on("liqpay.callback", function(data){
-    console.log("status", data.status);
-  }).on("liqpay.close", function(){
-    console.log("closed");
-  });
-};
-</script>
-<script src="https://static.liqpay.ua/libjs/checkout.js" async></script>
-```
+The widget uses the same `data` as checkout. Embed parameters: `data`, `signature`, `embedTo` (selector), `mode` (`embed` or `popup`), `language`. Script: `https://static.liqpay.ua/libjs/checkout.js`. Card data stays inside the LiqPay iframe. Events: `liqpay.callback`, `liqpay.close`.
 
-### 2.3 Card Payment (Server-to-Server, PCI scope)
+### 2.3 Card payment (server to server, PCI scope)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/card_payment, not re-read in 2026-10.
+
+Endpoint: `POST https://www.liqpay.ua/api/request`. Required: `version`, `public_key`, `action: pay`, `amount`, `currency`, `description`, `order_id`, `card`, `phone`, `ip`. This API needs PCI DSS certification.
+
+### 2.4 PrivatPay button (public)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/privat_pay, not re-read in 2026-10.
+
+Use checkout or the widget with `paytypes=privat24`.
+
+### 2.5 Apple Pay (public and server)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/apay, not re-read in 2026-10.
+
+Checkout or widget with `paytypes=apay`. Server API: `paytype` `apay` (encrypted token) or `apay_tavv` (with `tavv`).
+
+### 2.6 Google Pay (public and server)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/gpay, not re-read in 2026-10.
+
+Checkout or widget with `paytypes=gpay`. Server API: `paytype` `gpay` or `gpay_tavv`.
+
+### 2.7 QR payment (public)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/qr, not re-read in 2026-10.
+
+Checkout or widget with `paytypes=qr`. The status comes through the callback.
+
+### 2.8 Token payment (server, private)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/token?tab=1, scan 2026-10.
+
+The page marks this API as private. LiqPay gives access on request.
+
 Endpoint: `POST https://www.liqpay.ua/api/request`
 
-Required: `version`, `public_key`, `action: pay`, `amount`, `currency`, `description`, `order_id`, `card`, `phone`, `ip`
+Required: `version`, `public_key`, `action: paytoken`, `amount`, `card_token`, `currency`, `description`, `ip` (client IP), `order_id`.
 
-Card fields: `card` (PAN), `card_exp_month`, `card_exp_year`, `card_cvv` (CVV required when PAN provided)
-
-Token / wallet paytypes:
-- `paytype`: `apay`, `gpay` (encrypted tokens), `apay_tavv`, `gpay_tavv`, `tavv`
-- `tavv`: cryptogram for unencrypted tokens
-- `tid`: previous transaction id (recurring Visa token)
-
-Options:
-- `prepare:1` (validation only) or `prepare: tariffs` (DCC quote)
-- `recurringbytoken:1` (return `card_token`)
-- `server_url`, `result_url`
-- `language`
-- 3DS/MPI fields: `eci`, `cavv`, `tdsv`, `dsTransID`, `mpi_pares`, `mpi_md`, `cres`
-- Sender: `sender_*` (first_name, last_name, country_code, city, address, postal_code, email)
-- `is_recurring` (Boolean): token payments without customer
-
-Statuses: `success|error|failure|reversed|3ds_verify|otp_verify|cvv_verify|receiver_verify|sender_verify|wait_accept|wait_secure` plus standard list in section 8.
-
-Examples:
-- Direct PAN charge:
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "pay",
-  "amount": 15,
-  "currency": "EUR",
-  "description": "Ticket",
-  "order_id": "srv_2001",
-  "card": "4242424242424242",
-  "card_exp_month": "12",
-  "card_exp_year": "30",
-  "card_cvv": "123",
-  "phone": "+380950000001",
-  "ip": "203.0.113.10",
-  "server_url": "https://merchant/callback"
-}
-```
-- DCC quote without charging:
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "pay",
-  "amount": 100,
-  "currency": "USD",
-  "description": "DCC check",
-  "order_id": "dcc_01",
-  "card": "4242424242424242",
-  "card_exp_month": "12",
-  "card_exp_year": "30",
-  "card_cvv": "123",
-  "phone": "+380950000001",
-  "ip": "203.0.113.10",
-  "prepare": "tariffs"
-}
-```
-
-### 2.4 PrivatPay Button (Public)
-Use Checkout or Widget with `paytypes=privat24` (no extra fields). Server-side paytype for card payment: `paytype: privat24`.
-
-### 2.5 Apple Pay (Public/Server)
-- Use Checkout/Widget (`paytypes=apay`) for client-side.
-- For server API, call Card Payment with `paytype: apay` (encrypted token) or `apay_tavv` (unencrypted) and pass token data in `card` plus `tavv` for unencrypted; still include `amount`, `currency`, `description`, `order_id`, `ip`.
-
-### 2.6 Google Pay (Public/Server)
-- Use Checkout/Widget (`paytypes=gpay`) for client-side.
-- Server API: Card Payment with `paytype: gpay` (encrypted) or `gpay_tavv` (unencrypted) and token payload; include `tavv` for unencrypted.
-
-### 2.7 QR Payment (Public)
-Generate a payment via Checkout/Widget with `paytypes=qr` (or dedicated QR API if enabled). Customer pays by scanning QR in Privat24. Status arrives via Callback.
-
-### 2.8 Token Payment (Server)
-Endpoint: `POST https://www.liqpay.ua/api/request`
-
-Required: `version`, `public_key`, `action: paytoken`, `amount`, `currency`, `description`, `order_id`, `card_token`, `ip`
-
-Optional: `phone`, `language`, `server_url`, `prepare`, `split_rules`, `split_tickets_only`, sender fields, `customer`, `info`, `product_*`, `is_recurring`, `sandbox`.
+Optional: `phone`, `language`, `prepare`, `server_url`, `split_rules`, sender fields, `customer`, `info`, `product_*`.
 
 Example:
 ```json
@@ -230,279 +174,244 @@ Example:
   "order_id": "renew_22",
   "card_token": "B5B0D00B88B00ED00A00D0D0",
   "ip": "203.0.113.20",
-  "server_url": "https://merchant/callback",
-  "sandbox": 1
+  "server_url": "https://merchant/callback"
 }
 ```
 
 ### 2.9 Subscription
-- Checkout/Widget: `action: subscribe`, include `subscribe:1`, `subscribe_date_start`, `subscribe_periodicity` (`day|week|month|year`).
-- Server flows: same request pattern as Card Payment with `action: subscribe` when enabled.
-Statuses: `subscribed`, `unsubscribed`, plus payment statuses for recurring charges.
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/subscription, not re-read in 2026-10.
+
+Checkout or widget with `action: subscribe`, `subscribe: 1`, `subscribe_date_start`, `subscribe_periodicity`. Statuses: `subscribed`, `unsubscribed`, and the payment statuses.
 
 ### 2.10 Refund
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/refund?tab=1, scan 2026-10.
+
 Endpoint: `POST https://www.liqpay.ua/api/request`
 
-Required: `version`, `public_key`, `action: refund`, `order_id`, `amount`
-Optional: `wait_amount` (defer until amount is available)
-Statuses: `reversed`, `wait_accept`, or errors.
+Required: `version`, `public_key`, `action: refund`, `amount`, `order_id`. The `amount` can be less than the payment amount (partial refund).
 
-Example (partial refund):
+Answer:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `result` | String | `ok` or `error` |
+| `wait_amount` | Boolean | `true`: the refund comes from future payments. `false`: from the account of the merchant |
+| `payment_id` | Number | Payment id in LiqPay |
+| `status` | String | Final: `error`, `failure`, `reversed` (refunded), `success` |
+
+Example answer:
 ```json
 {
-  "public_key": "i123",
-  "version": 7,
-  "action": "refund",
-  "order_id": "srv_2001",
-  "amount": 5.50
-}
-```
-Edge cases: refund amount must be ≤ captured amount; repeated refunds after full reversal return `err_amount_hold` or `payment_err_status`.
-
-### 2.11 Two-step Payment (Hold)
-- **Hold:** `action: hold`, standard card params; status `hold_wait` on success.
-- **Capture:** `action: hold_completion`, fields: `version`, `public_key`, `order_id`, `amount` (≤ held amount).
-- **Release:** `action: refund`, fields: `version`, `public_key`, `order_id`, `amount` (same as held amount).
-
-> **Note:** There is no `action: unhold` API. All hold releases must use `action: refund` with the held amount.
-
-Redirect-first flow (Checkout/Widget):
-1) Create checkout with `action: hold` and `server_url`. Customer authorizes on LiqPay page and is redirected to `result_url`.
-2) Callback arrives with `status: hold_wait` (funds blocked). No charge yet.
-3) Capture server-side:
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "hold_completion",
-  "order_id": "hold_2024_001",
-  "amount": 45
-}
-```
-4) If you must release instead (refund the hold):
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "refund",
-  "order_id": "hold_2024_001",
-  "amount": 50
+  "result": "ok",
+  "wait_amount": "true",
+  "payment_id": "2417662437",
+  "status": "reversed"
 }
 ```
 
-Server-initiated hold (no redirect): same as Card Payment but `action: hold` with PAN/token data; status `hold_wait` returned directly or via callback.
+Edge cases (2025-12 scan, not shown on the live page): a refund over the captured amount and a refund after a full reversal give `err_amount_hold` or `payment_err_status`.
 
-Edge cases:
-- Capture amount must be ≤ held amount; exceeding returns `err_amount_hold`.
-- After capture, use `refund` for reversals.
-- Holds expire per acquirer rules (commonly 7–14 days); expired holds return `payment_not_found` on capture.
-- Duplicate capture requests may return `payment_err_status` if already completed.
+### 2.11 Two-step payment (hold)
 
-### 2.11.1 Use Case: Token Capture via Hold + Refund
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/two_step and https://www.liqpay.ua/en/doc/api/internet_acquiring/two_step?tab=1, scan 2026-10.
 
-A common pattern for capturing card tokens for future recurring payments without charging the customer:
+The page marks the server API as private. Without PCI DSS, use checkout or the widget with `action: hold`.
 
-1. **Create hold** for a small amount (e.g., 1 UAH) with `recurringbytoken: 1`:
-```json
-{
-  "public_key": "i123",
-  "version": 3,
-  "action": "hold",
-  "amount": 1,
-  "currency": "UAH",
-  "description": "Card verification",
-  "order_id": "verify_001",
-  "recurringbytoken": "1",
-  "server_url": "https://merchant/callback"
-}
-```
+- **Hold:** `action: hold`. Required: `version`, `public_key`, `amount`, `currency`, `description`, `order_id`, `phone`, and a card or a token. Optional: `recurringbytoken`, `is_recurring`, `server_url`, `language`, `prepare`, `split_rules`. A successful hold has status `hold_wait`.
+- **Completion:** `action: hold_completion`. Required: `version`, `public_key`, `amount`, `order_id`. Optional: `rro_info`, `split_tickets_only`. A partial completion cancels the hold on the remaining part.
+- **Release:** there is no `unhold` action. The page says: "Unblock funds by using the Returns API". Send `action: refund` with the held amount.
 
-2. **Receive callback** with `status: hold_wait` and `card_token`:
-```json
-{
-  "status": "hold_wait",
-  "card_token": "TOKEN_VALUE",
-  "sender_card_mask2": "424242*42",
-  "sender_card_type": "visa",
-  ...
-}
-```
+Hold periods: the bank of the payer guarantees the hold for 7 days (Mastercard) or 10 days (Visa). After that period, the bank releases the funds. A completion is possible for 30 days, but after the guaranteed period the bank of the payer can dispute the transaction.
 
-3. **Release hold** by refunding the held amount:
-```json
-{
-  "public_key": "i123",
-  "version": 3,
-  "action": "refund",
-  "order_id": "verify_001",
-  "amount": 1
-}
-```
+Edge cases (2025-12 scan): a completion over the held amount gives `err_amount_hold`. A second completion can give `payment_err_status`.
 
-4. **Store the token** for future recurring payments using `action: paytoken`.
+### 2.11.1 Use case: token capture through a hold and a refund
+
+Source: 2025-12 scan, checked against the two-step page in 2026-10.
+
+1. Make a hold for a small amount (for example 1 UAH) with `recurringbytoken: 1`.
+2. The callback has status `hold_wait`, `card_token`, `sender_card_mask2` and `sender_card_type`.
+3. Release the hold with `action: refund` and the held amount.
+4. Keep the token for later payments with `action: paytoken`.
 
 ### 2.12 Splitting
-Attach `split_rules` (JSON array) to supported APIs (Checkout, Widget, Card Payment, Token Payment, Two-step, QR). Item: `{ public_key, amount, commission_payer (sender|receiver), server_url, rro_info }`. Up to 5 recipients per official limits.
 
-### 2.13 Invoice (Public)
-Issue invoice email without immediate charge.
-- Use Checkout/Widget with `action: invoice` (or server API if enabled).
-- Required: `version`, `public_key`, `action: invoice`, `amount`, `currency`, `description`, `order_id`.
-- Optional: `expired_date`, `language`, `result_url`, `server_url`, product list via `rro_info.items`.
-Statuses: `invoice_wait`, `success` once paid, `reversed` if refunded, `wait_accept` possible.
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/splitting, not re-read in 2026-10.
 
-### 2.14 Cash Payment (Public)
-Use Checkout/Widget with `paytypes=cash`. Required: `phone` for terminal code, `expired_date` for payment deadline. Status `cash_wait` until customer pays in terminal.
+Add `split_rules` to checkout, widget, card payment, token payment, two-step or QR. Each item: `{public_key, amount, commission_payer, server_url, rro_info}`.
 
-### 2.15 DCC (Dynamic Currency Conversion)
-Server Card Payment supports DCC: call with `prepare: tariffs` to fetch conversion offer, then confirm charge with returned rates; ensure customer consent is collected.
-Example prepare (step 1): see DCC quote example in 2.3. After receiving rates, repeat `action: pay` without `prepare` and include customer-approved currency choice.
+### 2.13 Invoice (public)
 
-### 2.16 Card verification / card preauth (`action: auth` and `action: cardverification`)
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/invoice, not re-read in 2026-10.
 
-Purpose: verify that the card belongs to the customer using a dynamic authorization code (`verifycode`). This is described by LiqPay as a **non-financial verification transaction**.
+Checkout or widget with `action: invoice`. Statuses: `invoice_wait`, then `success`.
 
-Two integration options:
+### 2.14 Cash payment (public)
 
-1) **Client-Server (no PCI DSS):** run verification through **Checkout or Widget**.
-   - Use `action: auth` in the checkout/widget payload.
-   - Add `verifycode: "Y"` to ask LiqPay to generate a dynamic code and return it in Callback.
-   - Customer enters card data on the LiqPay page/iframe.
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/cash, not re-read in 2026-10.
 
-Example (Checkout auth + verifycode):
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "auth",
-  "description": "Card verification",
-  "order_id": "card_verify_0001",
-  "verifycode": "Y",
-  "result_url": "https://merchant/return",
-  "server_url": "https://merchant/callback",
-  "language": "en"
-}
-```
+Checkout or widget with `paytypes=cash`. Status `cash_wait` until the customer pays at a terminal.
 
-2) **Server-Server (PCI DSS required):** call the private **Cardverification** API.
-   - Endpoint: `POST https://www.liqpay.ua/api/request`
-   - `action: cardverification`
-   - Requires PAN/CVV/expiry on your side.
+### 2.15 DCC (dynamic currency conversion)
 
-Example (Server-to-server cardverification):
-```json
-{
-  "public_key": "i123",
-  "version": 7,
-  "action": "cardverification",
-  "card": "4242424242424242",
-  "card_cvv": "123",
-  "card_exp_month": "12",
-  "card_exp_year": "30",
-  "description": "Card verification",
-  "ip": "203.0.113.10",
-  "order_id": "card_verify_0001",
-  "verifycode": "Y",
-  "server_url": "https://merchant/callback"
-}
-```
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/dcc, not re-read in 2026-10.
 
-What you get back:
-- `status`: verification result. Final: `success|failure|error`. Possible intermediate: `3ds_verify` (3DS required).
-- `verifycode`: the dynamic verification code (if you requested it).
-- `confirm_phone`: phone number used to send OTP/verify code in some flows.
+Server card payment with `prepare: tariffs` gets a conversion offer. Then send `action: pay` without `prepare`.
 
-How to use `verifycode`:
-- Show the customer a prompt: “Enter the verification code from your bank statement / issuer channel”.
-- Compare the customer-entered code with `verifycode` from LiqPay Callback (or response for server-server).
+### 2.16 Card verification (`action: auth` and `action: cardverification`)
 
-Token support:
-- LiqPay docs explicitly describe `verifycode` for `auth`, but **do not document returning `card_token`** for `auth/cardverification`.
-- If you need a reusable token, use a payment/hold flow with `recurringbytoken: 1` (and store `card_token` from callback) or use the dedicated token APIs.
+Source: https://www.liqpay.ua/en/doc/api/confirmation/cardverification?tab=1, scan 2026-10.
 
-Edge cases:
-- The issuer may display the authorization/statement descriptor with delay; allow time before failing the verification.
-- If `status` is `3ds_verify`, you must complete 3DS (redirect/iframe flow) before expecting `success`.
-- Treat `order_id` as idempotency key: reusing it can return `order_id_duplicate`.
+- Client to server: checkout or widget with `action: auth` and `verifycode: Y`. LiqPay returns the dynamic code in the callback.
+- Server to server (private, PCI DSS): `action: cardverification`. Required: `version`, `public_key`, `card`, `card_cvv`, `card_exp_month`, `card_exp_year`, `description`, `ip`, `order_id`. Optional: `language`, `verifycode`.
+
+The answer has `status` and, when requested, `verifycode`. The docs do not say that `auth` or `cardverification` returns a `card_token`. To get a token, use a payment or a hold with `recurringbytoken: 1`.
 
 ---
 
 ## 3. Testing
-- Test keys start with `sandbox_`; no real funds move.
-- Use `sandbox: 1` in request for sandbox processing.
-- Test cards (CVV: any 3 digits; expiry: any future MM/YY):
-  - `4242424242424242` → success
-  - `4000000000003063` → success with 3DS
-  - `4000000000003089` → success with OTP
-  - `4000000000003055` → success with CVV prompt
-  - `4000000000000002` → failure (`limit`)
-  - `4000000000009995` → failure (`9859`)
-  - `sandbox_token` → token payment success
+
+Source: https://www.liqpay.ua/en/doc/api/testing, scan 2026-10.
+
+- LiqPay makes two key pairs for each merchant: a test pair and a production pair. Test keys start with `sandbox_`. No real money moves with them.
+- The live page does not name a `sandbox` request parameter.
+- Test cards. CVV2: any three digits. Expiry: any `MM/YY` date that is not in the past.
+
+| Card | Result |
+|---|---|
+| `4242424242424242` | Successful payment |
+| `4000000000003063` | Successful payment with 3DS |
+| `4000000000003089` | Successful payment with OTP |
+| `4000000000003055` | Successful payment with CVV |
+| `4000000000000002` | Failed payment, error code `limit` |
+| `4000000000009995` | Failed payment, error code `9859` |
+| `sandbox_token` | Successful payment with a token |
 
 ---
 
-## 4. Transfers & P2P
+## 4. Transfers and P2P
 
-### 4.1 Transfer to Card (p2pcredit)
-Endpoint: `POST https://www.liqpay.ua/api/request`
-- `action: p2pcredit`; include receiver card/token/account fields, `amount`, `currency`, `description`, `order_id`, `public_key`, `version`.
+### 4.1 Transfer to card (`p2pcredit`)
 
-### 4.2 P2P Debit (p2pdebit)
-Endpoint: `POST https://www.liqpay.ua/api/request`
-- `action: p2pdebit`; payer card fields similar to Card Payment; statuses follow standard payment list.
+Source: https://www.liqpay.ua/en/doc/api/transferring_to_card, not re-read in 2026-10.
+
+`POST https://www.liqpay.ua/api/request` with `action: p2pcredit`, the receiver fields, `amount`, `currency`, `description`, `order_id`.
+
+### 4.2 P2P debit (`p2pdebit`)
+
+Source: https://www.liqpay.ua/en/doc/api/p2pdebit, not re-read in 2026-10.
+
+`POST https://www.liqpay.ua/api/request` with `action: p2pdebit` and the card fields of the payer.
 
 ---
 
 ## 5. Tokenization APIs
 
-### 5.1 Issue Token without Charge
-Private API to tokenize a card without payment (action varies by enablement; often `token`). Requires card PAN + CVV + expiry, `order_id`, `public_key`, `version`, `description`, `ip`, `phone`. Returns `card_token` or reference. Contact LiqPay to enable.
+### 5.1 Token without a charge
 
-### 5.2 Using Tokens
-- Payments: `action: paytoken` (see 2.8)
-- Recurring: pass `is_recurring:true` when appropriate
-- Tokens are merchant-bound; error `101` if used by another merchant.
+Source: https://www.liqpay.ua/en/doc/api/tokens, scan 2026-10.
+
+A private API gets a card token without a payment. The merchant sends the card number, the expiry and the CVV from its server, so PCI DSS certification is required. LiqPay returns a token or a token reference. The page also has a "Status change" tab for token control.
+
+### 5.2 Use of tokens
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/token, scan 2026-10.
+
+- The first payment goes through checkout, the widget, a two-step payment, a card payment or a QR payment. After a successful payment, LiqPay returns the card token.
+- Later payments send only the token, with `action: paytoken` (section 2.8).
+- A token belongs to one merchant. Error `101` means that the token does not belong to this merchant.
 
 ---
 
-## 6. Verification Flows (3DS/OTP/CVV)
+## 6. Verification flows (3DS, OTP, CVV)
 
-Statuses that require extra steps:
-- `3ds_verify`: redirect customer to `redirect_to`; for 3DS 1.0 use `mpi_req_*`, for 3DS 2.0 use `cres` flow.
-- `otp_verify`: collect OTP sent to `confirm_phone` and submit via follow-up request.
-- `cvv_verify`: prompt for CVV and resend with `card_cvv`.
-- `sender_verify` / `receiver_verify`: collect required sender/receiver data and resend.
+Source: https://www.liqpay.ua/en/doc/api/confirmation/3ds, not re-read in 2026-10.
 
-After completing verification, resend the payment request with the additional credential(s) as instructed by the specific flow.
+Statuses that need one more step:
+- `3ds_verify`: send the customer to `redirect_to`.
+- `otp_verify`: get the OTP that LiqPay sent to `confirm_phone`, and send it in a new request.
+- `cvv_verify`: ask for the CVV and send it again in `card_cvv`.
 
 ---
 
 ## 7. Callback
 
-- Sent to your `server_url` as POST with `data` (base64 JSON) and `signature`.
-- Validate with `base64_encode(sha3-256(private_key + data + private_key))`.
+Source: https://www.liqpay.ua/en/doc/api/callback, scan 2026-10.
 
-Key response fields (not exhaustive): `status`, `action`, `order_id`, `liqpay_order_id`, `payment_id`, `transaction_id`, `amount`, `currency`, `paytype`, `card_token`, `sender_card_mask2`, `sender_card_type`, `sender_card_country`, `receiver_commission`, `sender_commission`, `agent_commission`, `rrn_credit`, `rrn_debit`, `mpi_eci`, `is_3ds`, `redirect_to`, `verifycode`, `err_code`, `err_description`.
+- After LiqPay gets the final status, it sends a POST to `server_url` with `data` (base64 JSON) and `signature`.
+- Check the signature: `base64_encode(sha3-256(private_key + data + private_key))`, then compare it with the received value.
+- To get the current status before the final callback, use the Payment Status API (section 7.1) at any time.
+- The page says nothing about retries of a callback.
 
-Status buckets:
-- Final: `success`, `failure`, `error`, `reversed`, `subscribed`, `unsubscribed`
-- Verification required: `3ds_verify`, `cvv_verify`, `otp_verify`, `receiver_verify`, `sender_verify`
-- Processing/other: `processing`, `prepared`, `wait_accept`, `wait_card`, `wait_compensation`, `wait_lc`, `wait_reserve`, `wait_secure`, `hold_wait`, `cash_wait`, `invoice_wait`, `try_again`, `wait_qr`, `p24_verify`, `mp_verify`, `captcha_verify`, `ivr_verify`, `password_verify`, `phone_verify`, `pin_verify`, `senderapp_verify`
+Response fields (selected): `acq_id`, `action`, `amount`, `card_token`, `completion_date`, `create_date`, `currency`, `customer`, `description`, `end_date`, `err_code`, `err_description`, `info`, `ip`, `is_3ds`, `liqpay_order_id`, `mpi_eci`, `order_id`, `payment_id`, `paytype`, `public_key`, `redirect_to`, `refund_date_last`, `refund_amount`, `sender_card_mask2`, `sender_card_type`, `sender_card_country`, `status`, `token`, `type`, `version` (7), `verifycode`, `wait_reserve_status`.
 
-Callback retry: LiqPay retries with backoff until HTTP 200 is received.
+`action` values in the callback: `pay`, `hold`, `subscribe`, `regular`. The status page adds `paysplit`, `paydonate` and `auth`.
+
+Status list (callback page and status page):
+
+| Group | Statuses |
+|---|---|
+| Final | `error` (data is incorrect), `failure`, `reversed` (refunded), `subscribed`, `success`, `unsubscribed`. The status page also lists `try_again` (the client can try again) |
+| Confirmation required | `3ds_verify`, `captcha_verify`, `cvv_verify`, `ivr_verify`, `otp_verify`, `password_verify`, `phone_verify`, `pin_verify`, `senderapp_verify`, `wait_qr`, `wait_sender`. The status page also lists `p24_verify` and `mp_verify` |
+| Other | `cash_wait`, `hold_wait` (amount is held), `invoice_wait`, `prepared`, `processing`, `wait_accept` (money taken, shop not verified, cancelled after 60 days), `wait_card`, `wait_compensation` (successful, paid in the daily settlement), `wait_lc`, `wait_reserve`, `wait_secure` |
+
+`wait_reserve_status`: `true` means that the payment is reserved for a refund.
+
+Chargebacks: the callback, status, refund and error pages show no chargeback or dispute status, action or field. A chargeback does not reach the plugin through the callback or the status API. Staff record it in Kill Bill.
+
+### 7.1 Payment status
+
+Source: https://www.liqpay.ua/en/doc/api/information/status_payment?tab=1, scan 2026-10.
+
+`POST https://www.liqpay.ua/api/request` with `version` 7, `public_key`, `action: status`, `order_id`.
+
+The answer has `result` (`ok`, `error`) and the callback fields, plus `transaction_id`, `bonus_*`, `confirm_phone`, `language`, `moment_part`. In the page example, `amount`, `payment_id`, `create_date` and `end_date` are JSON strings. `create_date` and `end_date` are Unix time in milliseconds.
+
+Example answer (selected fields):
+```json
+{
+  "action": "pay",
+  "amount": "0.1",
+  "create_date": "1715597977414",
+  "currency": "UAH",
+  "end_date": "1715598023416",
+  "order_id": "idByCard34v5D30esm7x",
+  "payment_id": "13291813",
+  "public_key": "i00000000000",
+  "result": "ok",
+  "status": "success",
+  "transaction_id": "13291813",
+  "type": "buy",
+  "version": "7"
+}
+```
+
+For an unknown `order_id`, the error list has `payment_not_found` ("Payment is not found").
 
 ---
 
-## 8. Error Codes (selected)
+## 8. Error codes
 
-Non-financial examples: `err_auth`, `invalid_signature`, `order_id_empty`, `order_id_duplicate`, `public_key_not_found`, `payment_not_found`, `err_api_action`, `err_api_ip`, `expired_3ds`, `expired_otp`, `expired_cvv`, `expired_phone`, `err_card`, `err_phone`, `err_amount_hold`, `err_split_amount`.
+Source: https://www.liqpay.ua/en/doc/api/errors, scan 2026-10.
 
-Financial examples: `90`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `9851`, `9852`, `9854`, `9855`, `9857`, `9859`, `9860`, `9861`, `9863`, `9867`, `9868`, `9872`, `9882`, `9886`, `9961`, `9989`.
+An error answer has `status` (`error` or `failure`), `err_code` and `err_description`.
 
-Refer to LiqPay Errors API for the full table.
+| Group | Codes |
+|---|---|
+| Anti-fraud | `limit`, `frod`, `decline` |
+| Signature | `invalid_signature`, `err_signature` |
+| Order and payment | `order_id_empty`, `order_id_duplicate`, `payment_not_found`, `payment_err_status`, `payment_processing`, `payment_not_subscribed`, `err_amount_hold`, `wrong_amount_currency`, `err_payment_amount_limit`, `err_limit_amount`, `amount_limit` |
+| Request | `err_auth`, `err_access`, `err_blocked`, `err_empty`, `err_missing`, `err_wrong`, `err_path`, `err_api_action`, `err_api_callback`, `err_api_ip`, `public_key_not_found`, `shop_blocked`, `shop_not_active`, `err_wrong_currency`, `err_currency_is_not_allowed` |
+| Token | `err_no_card_token`, `101` (not owned by this merchant), `102` (not active), `108` (no such token) |
+| Expiry | `err_cache`, `expired_phone`, `expired_3ds`, `expired_otp`, `expired_cvv`, `expired_p24`, `expired_sender`, `expired_pin`, `expired_ivr`, `expired_captcha`, `expired_password`, `expired_senderapp`, `expired_prepared`, `expired_mp`, `expired_qr` |
+| Financial | `90`, `103` to `107`, `109` to `115`, `2903`, `2915`, `3914`, `9851`, `9852`, `9854`, `9855`, `9857`, `9859`, `9860`, `9861`, `9863`, `9867`, `9868`, `9872`, `9882`, `9886`, `9961`, `9989` |
 
 ---
 
 ## 9. Support
-Technical support: liqpay.support@privatbank.ua  
-Phone: 3700 (UA mobile, free)
+
+Source: https://www.liqpay.ua/en/doc/api/internet_acquiring/two_step, scan 2026-10.
+
+Technical support: liqpay.support@privatbank.ua. Phone: 3700 (free from mobile phones in Ukraine).

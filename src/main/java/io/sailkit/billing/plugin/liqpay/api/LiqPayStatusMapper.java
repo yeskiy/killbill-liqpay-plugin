@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 Sailkit.io
+ * Copyright 2025-2026 Yehor Brodskyi
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,150 +16,67 @@
 
 package io.sailkit.billing.plugin.liqpay.api;
 
-import java.util.Set;
-
+import io.sailkit.billing.plugin.liqpay.client.LiqPayAction;
 import org.killbill.billing.payment.plugin.api.PaymentPluginStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/**
- * Maps LiqPay statuses to KillBill PaymentPluginStatus.
- */
-public class LiqPayStatusMapper {
+/** Maps a LiqPay status to a Kill Bill status for the action of the transaction. */
+public final class LiqPayStatusMapper {
 
-    private static final Set<String> SUCCESS_STATUSES = Set.of(
-            "success",
-            "sandbox",
-            "subscribed",
-            "unsubscribed"
-    );
+    private static final Logger logger = LoggerFactory.getLogger(LiqPayStatusMapper.class);
 
-    private static final Set<String> PENDING_STATUSES = Set.of(
-            "processing",
-            "3ds_verify",
-            "otp_verify",
-            "cvv_verify",
-            "wait_accept",
-            "wait_secure",
-            "wait_card",
-            "wait_compensation",
-            "wait_lc",
-            "wait_reserve",
-            "prepared",
-            "invoice_wait",
-            "cash_wait",
-            "wait_qr",
-            "captcha_verify",
-            "ivr_verify",
-            "password_verify",
-            "phone_verify",
-            "pin_verify",
-            "receiver_verify",
-            "sender_verify",
-            "senderapp_verify",
-            "p24_verify",
-            "mp_verify"
-    );
+    private LiqPayStatusMapper() {}
 
-    private static final Set<String> ERROR_STATUSES = Set.of(
-            "failure",
-            "error"
-    );
-
-    private LiqPayStatusMapper() {
-        // Utility class
+    public static PaymentPluginStatus map(final LiqPayAction action, final String liqpayStatus, final boolean sandboxTenant) {
+        if (action == LiqPayAction.STATUS) {
+            throw new IllegalArgumentException("map the action of the transaction, not status");
+        }
+        final boolean pay = action == LiqPayAction.PAY || action == LiqPayAction.PAYTOKEN;
+        final boolean refund = action == LiqPayAction.REFUND || action == LiqPayAction.UNHOLD;
+        final boolean hold = action == LiqPayAction.HOLD;
+        final String status = liqpayStatus == null ? "" : liqpayStatus;
+        switch (status) {
+            case "success":
+                return hold ? PaymentPluginStatus.PENDING : PaymentPluginStatus.PROCESSED;
+            case "wait_compensation":
+                return hold || refund ? PaymentPluginStatus.PENDING : PaymentPluginStatus.PROCESSED;
+            case "hold_wait":
+                return hold ? PaymentPluginStatus.PROCESSED : PaymentPluginStatus.PENDING;
+            case "sandbox":
+                return sandboxTenant ? PaymentPluginStatus.PROCESSED : PaymentPluginStatus.ERROR;
+            case "reversed":
+                // A reversed purchase without a Kill Bill refund is never paid.
+                return refund ? PaymentPluginStatus.PROCESSED : PaymentPluginStatus.ERROR;
+            case "failure":
+            case "error":
+            case "try_again":
+            case "unsubscribed":
+                return PaymentPluginStatus.ERROR;
+            case "processing":
+            case "prepared":
+            case "wait_secure":
+            case "wait_accept":
+            case "wait_lc":
+            case "wait_reserve":
+            case "wait_card":
+            case "invoice_wait":
+            case "cash_wait":
+            case "wait_qr":
+            case "wait_sender":
+                return PaymentPluginStatus.PENDING;
+            default:
+                if (status.endsWith("_verify")) {
+                    return PaymentPluginStatus.PENDING;
+                }
+                logger.warn("liqpay status not mapped status={} action={} result=PENDING", status, action.wireName());
+                return PaymentPluginStatus.PENDING;
+        }
     }
 
-    /**
-     * Maps a LiqPay status to KillBill PaymentPluginStatus.
-     *
-     * @param liqPayStatus LiqPay status string
-     * @param action LiqPay action (hold, pay, etc.)
-     * @return KillBill PaymentPluginStatus
-     */
-    public static PaymentPluginStatus mapStatus(String liqPayStatus, String action) {
-        if (liqPayStatus == null) {
-            return PaymentPluginStatus.UNDEFINED;
-        }
-
-        // Special case: hold_wait is success for authorize/hold actions
-        if ("hold_wait".equals(liqPayStatus)) {
-            if ("hold".equals(action) || "authorize".equals(action)) {
-                return PaymentPluginStatus.PROCESSED;
-            }
-            return PaymentPluginStatus.PENDING;
-        }
-
-        // Special case: reversed is success for refund
-        if ("reversed".equals(liqPayStatus)) {
-            return PaymentPluginStatus.PROCESSED;
-        }
-
-        if (SUCCESS_STATUSES.contains(liqPayStatus)) {
-            return PaymentPluginStatus.PROCESSED;
-        }
-
-        if (PENDING_STATUSES.contains(liqPayStatus)) {
-            return PaymentPluginStatus.PENDING;
-        }
-
-        if (ERROR_STATUSES.contains(liqPayStatus)) {
-            return PaymentPluginStatus.ERROR;
-        }
-
-        // Unknown status
-        return PaymentPluginStatus.UNDEFINED;
-    }
-
-    /**
-     * Checks if the status is final (not pending).
-     */
-    public static boolean isFinalStatus(String status) {
-        return SUCCESS_STATUSES.contains(status) ||
-               ERROR_STATUSES.contains(status) ||
-               "reversed".equals(status) ||
-               "hold_wait".equals(status);
-    }
-
-    /**
-     * Checks if the status indicates a successful payment.
-     *
-     * @param status LiqPay status string
-     * @param action LiqPay action (hold, pay, etc.)
-     * @return true if the payment was successful
-     */
-    public static boolean isSuccessStatus(String status, String action) {
-        if (status == null) {
-            return false;
-        }
-
-        // Direct success statuses
-        if (SUCCESS_STATUSES.contains(status)) {
-            return true;
-        }
-
-        // hold_wait is success for authorize/hold actions
-        if ("hold_wait".equals(status)) {
-            return "hold".equals(action) || "authorize".equals(action);
-        }
-
-        // reversed is success for refund
-        if ("reversed".equals(status)) {
-            return "refund".equals(action);
-        }
-
-        return false;
-    }
-
-    /**
-     * Checks if the status requires 3DS verification.
-     */
-    public static boolean requires3DS(String status) {
-        return "3ds_verify".equals(status);
-    }
-
-    /**
-     * Checks if the status requires OTP verification.
-     */
-    public static boolean requiresOTP(String status) {
-        return "otp_verify".equals(status);
+    /** PROCESSED, ERROR and CANCELED are final. A final row never goes back to PENDING. */
+    public static boolean isFinal(final PaymentPluginStatus status) {
+        return status == PaymentPluginStatus.PROCESSED || status == PaymentPluginStatus.ERROR
+               || status == PaymentPluginStatus.CANCELED;
     }
 }

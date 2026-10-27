@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 Sailkit.io
+ * Copyright 2025-2026 Yehor Brodskyi
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,351 +18,132 @@ package io.sailkit.billing.plugin.liqpay.client;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.apache.http.HttpEntity;
-import org.apache.http.NameValuePair;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.message.BasicNameValuePair;
-import org.apache.http.util.EntityUtils;
+import io.sailkit.billing.plugin.liqpay.config.LiqPayConfig;
+import io.sailkit.billing.plugin.liqpay.crypto.LiqPayEnvelope;
+import io.sailkit.billing.plugin.liqpay.crypto.LiqPaySigner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * HTTP client for LiqPay API.
- * Handles all communication with LiqPay payment gateway.
- */
+/** Server to server calls to `/api/request`. Logs hold only the action, the order id and the status. */
 public class LiqPayClient {
 
+    public static final int API_VERSION = 7;
+
     private static final Logger logger = LoggerFactory.getLogger(LiqPayClient.class);
+    private static final int MAX_ANSWER_BYTES = 64 * 1024;
 
-    public static final String API_URL = "https://www.liqpay.ua/api/request";
-    public static final String CHECKOUT_URL = "https://www.liqpay.ua/api/3/checkout";
+    private final HttpClient http;
 
-    private final String publicKey;
-    private final String privateKey;
-    private final boolean sandbox;
-    private final String serverUrl;
-    private final String language;
-    private final int connectionTimeout;
-    private final int readTimeout;
-
-    private final CloseableHttpClient httpClient;
-
-    public LiqPayClient(String publicKey, String privateKey, boolean sandbox,
-                        String serverUrl, String language,
-                        int connectionTimeout, int readTimeout) {
-        this.publicKey = publicKey;
-        this.privateKey = privateKey;
-        this.sandbox = sandbox;
-        this.serverUrl = serverUrl;
-        this.language = language;
-        this.connectionTimeout = connectionTimeout;
-        this.readTimeout = readTimeout;
-
-        RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectTimeout(connectionTimeout)
-                .setSocketTimeout(readTimeout)
-                .setConnectionRequestTimeout(connectionTimeout)
-                .build();
-
-        this.httpClient = HttpClients.custom()
-                .setDefaultRequestConfig(requestConfig)
-                .build();
+    public LiqPayClient(final Duration connectTimeout) {
+        this.http = HttpClient.newBuilder()
+                              .connectTimeout(connectTimeout)
+                              .followRedirects(HttpClient.Redirect.NEVER)
+                              .build();
     }
 
-    /**
-     * Sends a request to LiqPay API.
-     *
-     * @param request LiqPay request
-     * @return LiqPay response
-     * @throws LiqPayException if the request fails
-     */
-    public LiqPayResponse request(LiqPayRequest request) throws LiqPayException {
-        Map<String, Object> params = request.getParams();
-
-        // Add default parameters
-        params.putIfAbsent("public_key", publicKey);
-        if (sandbox) {
-            params.put("sandbox", 1);
-        }
-        if (serverUrl != null && !serverUrl.isEmpty()) {
-            params.putIfAbsent("server_url", serverUrl);
-        }
-        // NOTE: result_url is passed per request, not from config
-        if (language != null && !language.isEmpty()) {
-            params.putIfAbsent("language", language);
-        }
-
-        // Log the full request payload for debugging (helpful for LiqPay support)
-        logger.info("LiqPay API Request - Action: {}, Order: {}, Full params: {}",
-                params.get("action"), params.get("order_id"), params);
-
-        String data = LiqPaySignature.encodeData(params);
-        String signature = LiqPaySignature.createSignature(privateKey, data);
-
-        logger.info("LiqPay API Request - URL: {}, data (base64): {}, signature: {}",
-                API_URL, data, signature);
-
-        return executeRequest(data, signature);
+    public LiqPayResult status(final LiqPayConfig c, final String orderId) throws LiqPayTransientException {
+        return call(c, LiqPayAction.STATUS, orderId, new LinkedHashMap<>());
     }
 
-    /**
-     * Executes the HTTP request to LiqPay API.
-     */
-    private LiqPayResponse executeRequest(String data, String signature) throws LiqPayException {
-        HttpPost httpPost = new HttpPost(API_URL);
+    public LiqPayResult refund(final LiqPayConfig c, final String orderId, final BigDecimal amount) throws LiqPayTransientException {
+        final Map<String, Object> p = new LinkedHashMap<>();
+        p.put("amount", money(amount));
+        return call(c, LiqPayAction.REFUND, orderId, p);
+    }
 
-        List<NameValuePair> formParams = new ArrayList<>();
-        formParams.add(new BasicNameValuePair("data", data));
-        formParams.add(new BasicNameValuePair("signature", signature));
+    /** `extra` holds the optional fields, for example `description`, `ip` and `server_url`. A null value is not sent. */
+    public LiqPayResult payToken(final LiqPayConfig c, final String orderId, final BigDecimal amount, final String currency,
+                                 final String token, final Map<String, Object> extra) throws LiqPayTransientException {
+        return call(c, LiqPayAction.PAYTOKEN, orderId, tokenParams(amount, currency, token, extra));
+    }
 
+    public LiqPayResult holdToken(final LiqPayConfig c, final String orderId, final BigDecimal amount, final String currency,
+                                  final String token, final Map<String, Object> extra) throws LiqPayTransientException {
+        return call(c, LiqPayAction.HOLD, orderId, tokenParams(amount, currency, token, extra));
+    }
+
+    public LiqPayResult holdCompletion(final LiqPayConfig c, final String orderId, final BigDecimal amount) throws LiqPayTransientException {
+        final Map<String, Object> p = new LinkedHashMap<>();
+        p.put("amount", money(amount));
+        return call(c, LiqPayAction.HOLD_COMPLETION, orderId, p);
+    }
+
+    /** LiqPay has no unhold action, so a hold release is a refund of the held amount. */
+    public LiqPayResult releaseHold(final LiqPayConfig c, final String orderId, final BigDecimal amount) throws LiqPayTransientException {
+        return refund(c, orderId, amount);
+    }
+
+    // --- Transport ---
+
+    private LiqPayResult call(final LiqPayConfig c, final LiqPayAction action, final String orderId,
+                              final Map<String, Object> extra) throws LiqPayTransientException {
+        final Map<String, Object> params = new LinkedHashMap<>();
+        params.put("version", API_VERSION);
+        params.put("public_key", c.publicKey());
+        params.put("action", action.wireName());
+        params.put("order_id", orderId);
+        params.putAll(extra);
+        final String data = LiqPayEnvelope.encode(params);
+        final String body = "data=" + URLEncoder.encode(data, StandardCharsets.UTF_8)
+                            + "&signature=" + URLEncoder.encode(LiqPaySigner.sign(c.privateKey(), data), StandardCharsets.UTF_8);
+        final HttpRequest request = HttpRequest.newBuilder(URI.create(c.apiBaseUrl().toString().replaceAll("/+$", "") + "/api/request"))
+                                               .timeout(c.requestTimeout())
+                                               .header("Content-Type", "application/x-www-form-urlencoded")
+                                               .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                                               .build();
+        final HttpResponse<byte[]> response;
         try {
-            httpPost.setEntity(new UrlEncodedFormEntity(formParams, StandardCharsets.UTF_8));
+            response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LiqPayTransientException("liqpay call interrupted", e);
+        } catch (final IOException e) {
+            logger.warn("liqpay call failed action={} order_id={} error={}", action.wireName(), orderId, e.getClass().getSimpleName());
+            throw new LiqPayTransientException("liqpay call failed", e);
+        }
+        if (response.statusCode() / 100 != 2 || response.body() == null || response.body().length > MAX_ANSWER_BYTES) {
+            logger.warn("liqpay call failed action={} order_id={} http_status={}", action.wireName(), orderId, response.statusCode());
+            throw new LiqPayTransientException("liqpay answered http " + response.statusCode());
+        }
+        final LiqPayResult result;
+        try {
+            result = LiqPayResult.from(LiqPayEnvelope.parseJson(response.body()));
+        } catch (final IllegalArgumentException e) {
+            logger.warn("liqpay answer not readable action={} order_id={}", action.wireName(), orderId);
+            throw new LiqPayTransientException("liqpay answer is not valid JSON", e);
+        }
+        logger.info("liqpay call action={} order_id={} status={} err_code={}",
+                    action.wireName(), orderId, result.status(), result.errCode());
+        return result;
+    }
 
-            logger.info("Sending HTTP POST to LiqPay API: {}", API_URL);
-
-            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-                int statusCode = response.getStatusLine().getStatusCode();
-                HttpEntity entity = response.getEntity();
-                String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
-
-                logger.info("LiqPay API Response - HTTP Status: {}, Body: {}", statusCode, responseBody);
-
-                LiqPayResponse liqPayResponse = LiqPayResponse.fromJson(responseBody);
-
-                if (liqPayResponse.isError()) {
-                    logger.error("LiqPay API Error - Status: {}, ErrCode: {}, ErrDescription: {}",
-                            liqPayResponse.getStatus(), liqPayResponse.getErrCode(), liqPayResponse.getErrDescription());
-                    throw new LiqPayException(liqPayResponse);
-                }
-
-                return liqPayResponse;
+    private static Map<String, Object> tokenParams(final BigDecimal amount, final String currency, final String token,
+                                                   final Map<String, Object> extra) {
+        final Map<String, Object> p = new LinkedHashMap<>();
+        p.put("amount", money(amount));
+        p.put("currency", currency);
+        p.put("card_token", token);
+        extra.forEach((k, v) -> {
+            if (v != null) {
+                p.putIfAbsent(k, v);
             }
-        } catch (LiqPayException e) {
-            throw e;
-        } catch (IOException e) {
-            logger.error("Failed to communicate with LiqPay API", e);
-            throw new LiqPayException("Failed to communicate with LiqPay API", e);
-        }
+        });
+        return p;
     }
 
-    // Convenience methods for common operations
-
-    /**
-     * Performs a direct payment (purchase).
-     */
-    public LiqPayResponse pay(String orderId, BigDecimal amount, String currency, String description) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.pay(publicKey, orderId, amount, currency, description)
-                .recurringByToken(true)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Performs a token-based payment.
-     */
-    public LiqPayResponse payToken(String orderId, String cardToken, BigDecimal amount, String currency, String description) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.payToken(publicKey, orderId, cardToken, amount, currency, description)
-                .isRecurring(true)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Performs a hold (pre-authorization).
-     */
-    public LiqPayResponse hold(String orderId, BigDecimal amount, String currency, String description) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.hold(publicKey, orderId, amount, currency, description)
-                .recurringByToken(true)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Performs a token-based hold (pre-authorization).
-     */
-    public LiqPayResponse holdWithToken(String orderId, String cardToken, BigDecimal amount, String currency, String description) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.builder()
-                .publicKey(publicKey)
-                .action("hold")
-                .orderId(orderId)
-                .cardToken(cardToken)
-                .amount(amount)
-                .currency(currency)
-                .description(description)
-                .recurringByToken(true)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Captures (completes) a held payment.
-     */
-    public LiqPayResponse holdCompletion(String orderId, BigDecimal amount) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.holdCompletion(publicKey, orderId, amount)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Releases a held payment by refunding the held amount.
-     * Note: LiqPay does not have an "unhold" action. Hold releases use the refund API.
-     *
-     * @param orderId Original hold order ID
-     * @param amount Amount to release (must match held amount)
-     * @return LiqPay response
-     * @throws LiqPayException if the request fails
-     */
-    public LiqPayResponse releaseHold(String orderId, BigDecimal amount) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.releaseHold(publicKey, orderId, amount)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Performs a refund.
-     */
-    public LiqPayResponse refund(String orderId, BigDecimal amount) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.refund(publicKey, orderId, amount)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Gets the status of a payment.
-     */
-    public LiqPayResponse status(String orderId) throws LiqPayException {
-        LiqPayRequest request = LiqPayRequest.status(publicKey, orderId)
-                .build();
-        return request(request);
-    }
-
-    /**
-     * Builds checkout form data for hosted payment page.
-     *
-     * @param orderId Order ID
-     * @param amount Payment amount
-     * @param currency Currency code
-     * @param description Payment description
-     * @param action Action type (pay, hold, subscribe, etc.)
-     * @return Map containing 'data' and 'signature' for the checkout form
-     */
-    public Map<String, String> buildCheckoutFormData(String orderId, BigDecimal amount, String currency,
-                                                      String description, String action) {
-        LiqPayRequest.Builder builder = LiqPayRequest.builder()
-                .publicKey(publicKey)
-                .action(action)
-                .orderId(orderId)
-                .amount(amount)
-                .currency(currency)
-                .description(description)
-                .recurringByToken(true);
-
-        if (sandbox) {
-            builder.sandbox(true);
-        }
-        if (serverUrl != null && !serverUrl.isEmpty()) {
-            builder.serverUrl(serverUrl);
-        }
-        // NOTE: result_url is passed per request, not from config
-        if (language != null && !language.isEmpty()) {
-            builder.language(language);
-        }
-
-        LiqPayRequest request = builder.build();
-        String data = LiqPaySignature.encodeData(request.getParams());
-        String signature = LiqPaySignature.createSignature(privateKey, data);
-
-        return Map.of(
-                "data", data,
-                "signature", signature
-        );
-    }
-
-    /**
-     * Builds checkout form data with custom parameters.
-     */
-    public Map<String, String> buildCheckoutFormData(Map<String, Object> params) {
-        params.putIfAbsent("public_key", publicKey);
-        params.putIfAbsent("version", LiqPayRequest.API_VERSION);
-
-        if (sandbox) {
-            params.put("sandbox", 1);
-        }
-        if (serverUrl != null && !serverUrl.isEmpty()) {
-            params.putIfAbsent("server_url", serverUrl);
-        }
-        // NOTE: result_url is passed per request, not from config
-        if (language != null && !language.isEmpty()) {
-            params.putIfAbsent("language", language);
-        }
-
-        // Always request token for recurring capability
-        params.putIfAbsent("recurringbytoken", "1");
-
-        String data = LiqPaySignature.encodeData(params);
-        String signature = LiqPaySignature.createSignature(privateKey, data);
-
-        return Map.of(
-                "data", data,
-                "signature", signature
-        );
-    }
-
-    /**
-     * Verifies a callback signature.
-     */
-    public boolean verifyCallbackSignature(String data, String signature) {
-        return LiqPaySignature.verifySignature(privateKey, data, signature);
-    }
-
-    /**
-     * Parses callback data.
-     */
-    public LiqPayResponse parseCallback(String data) {
-        Map<String, Object> decodedData = LiqPaySignature.decodeData(data);
-        return LiqPayResponse.fromMap(decodedData);
-    }
-
-    /**
-     * Closes the HTTP client.
-     */
-    public void close() {
-        try {
-            httpClient.close();
-        } catch (IOException e) {
-            logger.warn("Failed to close HTTP client", e);
-        }
-    }
-
-    // Getters
-
-    public String getPublicKey() {
-        return publicKey;
-    }
-
-    public boolean isSandbox() {
-        return sandbox;
-    }
-
-    public String getServerUrl() {
-        return serverUrl;
-    }
-
-    public String getLanguage() {
-        return language;
-    }
-
-    public static String getCheckoutUrl() {
-        return CHECKOUT_URL;
+    /** Scale 2 as a plain decimal string, so JSON never shows an exponent. */
+    public static String money(final BigDecimal amount) {
+        return amount.setScale(2, RoundingMode.UNNECESSARY).toPlainString();
     }
 }

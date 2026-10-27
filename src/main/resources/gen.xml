@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  ~ Copyright 2025-2026 Yehor Brodskyi
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~    http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<!-- Run with: mvn -Pjooq-codegen generate-sources. The output is checked in. -->
+<configuration xmlns="http://www.jooq.org/xsd/jooq-codegen-3.15.0.xsd">
+    <generator>
+        <database>
+            <name>org.jooq.meta.extensions.ddl.DDLDatabase</name>
+            <properties>
+                <property>
+                    <key>scripts</key>
+                    <value>src/main/resources/ddl-postgresql.sql</value>
+                </property>
+                <property>
+                    <key>sort</key>
+                    <value>semantic</value>
+                </property>
+                <property>
+                    <key>defaultNameCase</key>
+                    <value>lower</value>
+                </property>
+                <property>
+                    <key>unqualifiedSchema</key>
+                    <value>none</value>
+                </property>
+            </properties>
+            <includes>liqpay_.*</includes>
+            <outputSchemaToDefault>true</outputSchemaToDefault>
+        </database>
+        <generate>
+            <javaTimeTypes>true</javaTimeTypes>
+            <generatedAnnotation>false</generatedAnnotation>
+        </generate>
+        <target>
+            <packageName>io.sailkit.billing.plugin.liqpay.dao.gen</packageName>
+            <directory>src/main/java</directory>
+        </target>
+    </generator>
+</configuration>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025-2026 Yehor Brodskyi
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~    http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<FindBugsFilter>
+    <!-- jOOQ generates this package from ddl-postgresql.sql. -->
+    <Match>
+        <Package name="io.sailkit.billing.plugin.liqpay.dao.gen" />
+    </Match>
+    <Match>
+        <Package name="io.sailkit.billing.plugin.liqpay.dao.gen.tables" />
+    </Match>
+    <Match>
+        <Package name="io.sailkit.billing.plugin.liqpay.dao.gen.tables.records" />
+    </Match>
+    <!-- The API and the servlet keep the injected store. It is a collaborator, not internal state. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2" />
+        <Or>
+            <Class name="io.sailkit.billing.plugin.liqpay.api.LiqPayPaymentPluginApi" />
+            <Class name="io.sailkit.billing.plugin.liqpay.servlet.LiqPayCallbackServlet" />
+        </Or>
+        <Field name="store" />
+    </Match>
+    <!-- Kill Bill never serializes the servlet. The HTTP client cache is built again with each servlet. -->
+    <Match>
+        <Bug pattern="SE_TRANSIENT_FIELD_NOT_RESTORED" />
+        <Class name="io.sailkit.billing.plugin.liqpay.servlet.LiqPayCallbackServlet" />
+        <Field name="clients" />
+    </Match>
+</FindBugsFilter>

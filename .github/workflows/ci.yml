@@ -6,17 +6,49 @@ on:
   pull_request:
     branches: ["**"]
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6.1.0
         with:
           distribution: temurin
           java-version: 11
           cache: maven
+      # Unit, servlet and Testcontainers DAO tests. The runner has Docker.
       - name: Build and test
         run: mvn -B verify
+
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      # Fails on an advisory with a CVSS score of 7.0 or more (HIGH or CRITICAL).
+      - name: OSV scan of pom.xml
+        run: |
+          set +e
+          docker run --rm -v "$PWD:/src:ro" \
+            ghcr.io/google/osv-scanner:v2.6.0@sha256:afd838850ac1a0fcc15ff4a041dc9ba11123c3f0d2666217a5f0fcf9222b55fa \
+            scan source --lockfile /src/pom.xml --format json > osv.json
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            echo "osv-scanner failed with exit code $code"
+            exit "$code"
+          fi
+          jq -r '[.results[]?.packages[]? | .package as $p | .groups[]?
+                  | select((.max_severity | if . == null or . == "" then 0 else tonumber end) >= 7.0)
+                  | "\($p.name)@\($p.version) \(.ids | join(",")) severity=\(.max_severity)"] | .[]' osv.json > high.txt
+          if [ -s high.txt ]; then
+            echo "HIGH or CRITICAL advisories:"
+            cat high.txt
+            exit 1
+          fi
+          echo "No HIGH or CRITICAL advisory."
