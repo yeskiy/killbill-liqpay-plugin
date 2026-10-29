@@ -47,6 +47,8 @@ public final class TransactionInfos {
     public static final String STATUS = "liqpay_status";
     public static final String PAYMENT_ID = "liqpay_payment_id";
     public static final String ERR_CODE = "liqpay_err_code";
+    public static final String ERR_DESCRIPTION = "liqpay_err_description";
+    public static final String REQUEST = "liqpay_request";
     public static final String CHECKOUT_URL = "liqpay_checkout_url";
     public static final String DATA = "liqpay_data";
     public static final String SIGNATURE = "liqpay_signature";
@@ -56,6 +58,8 @@ public final class TransactionInfos {
     static final String STORED_URL = "checkout_url";
     static final String STORED_DATA = "checkout_data";
     static final String STORED_SIGNATURE = "checkout_signature";
+    /** Key in `additional_data` that holds the request fields of a refund, with no secret. */
+    static final String STORED_REQUEST = "request";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -68,6 +72,9 @@ public final class TransactionInfos {
         add(props, STATUS, row.getLiqpayStatus());
         add(props, PAYMENT_ID, row.getLiqpayPaymentId());
         add(props, ERR_CODE, row.getErrCode());
+        add(props, ERR_DESCRIPTION, row.getErrDescription());
+        final Object request = stored(row).get(STORED_REQUEST);
+        add(props, REQUEST, request == null ? null : json(MAPPER.convertValue(request, new TypeReference<Map<String, Object>>() {})));
         if (status == PaymentPluginStatus.PENDING) {
             final Map<String, Object> form = checkoutForm(row);
             if (!form.isEmpty()) {
@@ -103,14 +110,27 @@ public final class TransactionInfos {
 
     /** The stored checkout form fields of a row, or an empty map. */
     static Map<String, Object> checkoutForm(final LiqpayTransactionsRecord row) {
+        return pick(row, STORED_URL, STORED_DATA, STORED_SIGNATURE);
+    }
+
+    /** The stored fields that a later LiqPay answer must keep: the checkout form and the refund request. */
+    static Map<String, Object> kept(final LiqpayTransactionsRecord row) {
+        return pick(row, STORED_URL, STORED_DATA, STORED_SIGNATURE, STORED_REQUEST);
+    }
+
+    private static Map<String, Object> pick(final LiqpayTransactionsRecord row, final String... keys) {
+        final Map<String, Object> stored = stored(row);
+        final Map<String, Object> picked = new LinkedHashMap<>();
+        Stream.of(keys).filter(stored::containsKey).forEach(k -> picked.put(k, stored.get(k)));
+        return picked;
+    }
+
+    private static Map<String, Object> stored(final LiqpayTransactionsRecord row) {
         if (row.getAdditionalData() == null) {
             return Map.of();
         }
         try {
-            final Map<String, Object> stored = MAPPER.readValue(row.getAdditionalData(), new TypeReference<Map<String, Object>>() {});
-            final Map<String, Object> form = new LinkedHashMap<>();
-            Stream.of(STORED_URL, STORED_DATA, STORED_SIGNATURE).filter(stored::containsKey).forEach(k -> form.put(k, stored.get(k)));
-            return form;
+            return MAPPER.readValue(row.getAdditionalData(), new TypeReference<Map<String, Object>>() {});
         } catch (final IOException e) {
             return Map.of();
         }

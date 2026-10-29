@@ -18,6 +18,7 @@ package io.sailkit.billing.plugin.liqpay.api;
 
 import java.math.BigDecimal;
 import java.sql.SQLException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,7 +48,8 @@ final class RefundFlow {
         this.store = store;
     }
 
-    /** Returns the stored refund row. A rejected refund is stored as ERROR and makes no LiqPay call. */
+    /** Returns the stored refund row. A rejected refund is stored as ERROR and makes no LiqPay call.
+     *  Every refund row stores its request fields, so a refusal shows what was sent. */
     LiqpayTransactionsRecord refund(final LiqPayConfig c, final LiqPayClient client, final UUID tenantId, final UUID kbAccountId,
                                     final UUID kbPaymentId, final UUID kbTransactionId, final UUID kbPaymentMethodId,
                                     final BigDecimal amount, final Currency currency) throws SQLException {
@@ -66,11 +68,14 @@ final class RefundFlow {
                                                      || PaymentPluginStatus.PENDING.name().equals(r.getPluginStatus()))
                                         .map(LiqpayTransactionsRecord::getAmount)
                                         .reduce(BigDecimal.ZERO, BigDecimal::add);
+        final BigDecimal rest = paid.map(p -> p.getAmount().subtract(refunded)).orElse(BigDecimal.ZERO);
         final String errCode = paid.isEmpty() ? "no_paid_transaction"
                                : amount == null || amount.signum() <= 0 || amount.scale() > 2 ? "amount_not_allowed"
                                : !paid.get().getCurrency().equals(currency.name()) ? "currency_mismatch"
-                               : amount.compareTo(paid.get().getAmount().subtract(refunded)) > 0 ? "refund_exceeds_paid"
+                               : amount.compareTo(rest) > 0 ? "refund_exceeds_paid"
                                : null;
+        final String paidOrderId = paid.map(RefundFlow::liqpayOrderId).orElse(null);
+        final Map<String, Object> request = request(paidOrderId, amount, currency);
         final LiqpayTransactionsRecord row = new LiqpayTransactionsRecord();
         row.setKbAccountId(kbAccountId.toString());
         row.setKbPaymentId(kbPaymentId.toString());
@@ -80,17 +85,18 @@ final class RefundFlow {
         row.setTransactionType(TransactionType.REFUND.name());
         row.setLiqpayAction(LiqPayAction.REFUND.wireName());
         row.setOrderId(kbTransactionId.toString());
-        row.setOriginalOrderId(paid.map(RefundFlow::liqpayOrderId).orElse(null));
+        row.setOriginalOrderId(paidOrderId);
         row.setAmount(amount == null ? BigDecimal.ZERO : amount);
         row.setCurrency(currency.name());
         row.setPluginStatus(errCode == null ? PaymentPluginStatus.PENDING.name() : PaymentPluginStatus.ERROR.name());
         row.setErrCode(errCode);
+        row.setErrDescription(errCode == null ? null : describe(errCode, amount, currency, paid.orElse(null), rest));
+        row.setAdditionalData(TransactionInfos.json(Map.of(TransactionInfos.STORED_REQUEST, request)));
         store.insertTransaction(row);
         if (errCode != null) {
-            logger.warn("liqpay refund rejected order_id={} err_code={}", kbTransactionId, errCode);
+            logRefusal(paidOrderId == null ? kbTransactionId.toString() : paidOrderId, "not_sent", errCode, row.getErrDescription());
             return row;
         }
-        final String paidOrderId = liqpayOrderId(paid.get());
         final LiqPayResult r;
         try {
             r = client.refund(c, paidOrderId, amount);
@@ -101,8 +107,41 @@ final class RefundFlow {
         final PaymentPluginStatus mapped = "error".equals(r.result())
                                            ? PaymentPluginStatus.ERROR
                                            : LiqPayStatusMapper.map(LiqPayAction.REFUND, r.status(), c.sandbox());
-        store.updateFromLiqPay(kbTransactionId.toString(), tenantId, r, mapped, Map.of());
+        store.updateFromLiqPay(kbTransactionId.toString(), tenantId, r, mapped, Map.of(TransactionInfos.STORED_REQUEST, request));
+        if (mapped == PaymentPluginStatus.ERROR) {
+            logRefusal(paidOrderId, r.status(), r.errCode(), r.errDescription());
+        }
         return store.findByTransactionId(kbTransactionId, tenantId).orElse(row);
+    }
+
+    /** The refund request fields that LiqPay gets, plus the Kill Bill currency. It holds no key and no signature. */
+    private static Map<String, Object> request(final String orderId, final BigDecimal amount, final Currency currency) {
+        final boolean sendable = amount != null && amount.scale() <= 2;
+        final Map<String, Object> fields = new LinkedHashMap<>(
+                sendable ? LiqPayClient.refundFields(orderId, amount)
+                         : LiqPayClient.requestFields(LiqPayAction.REFUND, orderId, amount == null ? Map.of() : Map.of("amount", amount.toPlainString())));
+        fields.put("currency", currency.name());
+        return fields;
+    }
+
+    private static String describe(final String errCode, final BigDecimal amount, final Currency currency,
+                                   final LiqpayTransactionsRecord paid, final BigDecimal rest) {
+        switch (errCode) {
+            case "no_paid_transaction":
+                return "The payment has no paid transaction to refund";
+            case "amount_not_allowed":
+                return "The refund amount " + (amount == null ? "null" : amount.toPlainString()) + " is not above 0 with 2 decimals or less";
+            case "currency_mismatch":
+                return "The refund currency " + currency.name() + " is not the paid currency " + paid.getCurrency();
+            default:
+                return "The refund amount " + LiqPayClient.money(amount) + " " + currency.name() + " is above the paid rest "
+                       + LiqPayClient.money(rest) + " " + currency.name();
+        }
+    }
+
+    private static void logRefusal(final String orderId, final String status, final String errCode, final String errDescription) {
+        logger.warn("liqpay refund refused action={} order_id={} status={} err_code={} err_description={}",
+                    LiqPayAction.REFUND.wireName(), orderId, status, errCode, errDescription);
     }
 
     /** The LiqPay order of a paid row. A capture completes the order of its hold. */

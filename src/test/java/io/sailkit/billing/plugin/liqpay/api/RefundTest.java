@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
+import io.sailkit.billing.plugin.liqpay.LogCapture;
 import io.sailkit.billing.plugin.liqpay.crypto.LiqPayEnvelope;
 import io.sailkit.billing.plugin.liqpay.dao.gen.tables.records.LiqpayTransactionsRecord;
 import org.killbill.billing.catalog.api.Currency;
@@ -43,6 +45,9 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static io.sailkit.billing.plugin.liqpay.api.Fixtures.context;
 import static io.sailkit.billing.plugin.liqpay.api.Fixtures.props;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 public class RefundTest {
 
@@ -205,5 +210,93 @@ public class RefundTest {
         final PaymentTransactionInfoPlugin i = refund(payment, tx, "100.00");
         assertEquals(i.getStatus(), PaymentPluginStatus.PENDING);
         assertEquals(store.findByTransactionId(tx, tenant).orElseThrow().getPluginStatus(), "PENDING");
+    }
+
+    // --- Refusals ---
+
+    private static final String REFUSED = "{\"result\":\"error\",\"status\":\"error\",\"action\":\"refund\","
+                                          + "\"err_code\":\"payment_err_status\","
+                                          + "\"err_description\":\"The payment system did not complete the transaction\"}";
+
+    private static JsonNode stored(final LiqpayTransactionsRecord row) throws Exception {
+        return new ObjectMapper().readTree(row.getAdditionalData());
+    }
+
+    private static void assertNoSecret(final String text) {
+        java.util.stream.Stream.of("public_key", "private_key", "\"data\"", "signature", Fixtures.PUBLIC_KEY, Fixtures.PRIVATE_KEY)
+                               .forEach(s -> assertFalse(text.contains(s), "no " + s + " in " + text));
+    }
+
+    @Test
+    public void refusalStoresRequestWithoutSecrets() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        answer(REFUSED);
+        final UUID tx = UUID.randomUUID();
+        assertEquals(refund(payment, tx, "100.00").getStatus(), PaymentPluginStatus.ERROR);
+        final LiqpayTransactionsRecord row = store.findByTransactionId(tx, tenant).orElseThrow();
+        final JsonNode request = stored(row).get("request");
+        assertEquals(request.get("version").asInt(), 7);
+        assertEquals(request.get("action").asText(), "refund");
+        assertEquals(request.get("order_id").asText(), order);
+        assertEquals(request.get("amount").asText(), "100.00");
+        assertEquals(request.get("currency").asText(), "USD");
+        assertEquals(stored(row).get("err_description").asText(), "The payment system did not complete the transaction");
+        assertNoSecret(row.getAdditionalData());
+
+        final UUID over = UUID.randomUUID();
+        assertEquals(refund(payment, over, "100.01").getStatus(), PaymentPluginStatus.ERROR);
+        final LiqpayTransactionsRecord local = store.findByTransactionId(over, tenant).orElseThrow();
+        assertEquals(stored(local).get("request").get("order_id").asText(), order);
+        assertEquals(stored(local).get("request").get("amount").asText(), "100.01");
+        assertEquals(local.getErrDescription(), "The refund amount 100.01 USD is above the paid rest 100.00 USD");
+        final UUID whole = UUID.randomUUID();
+        refund(payment, whole, "101");
+        assertEquals(store.findByTransactionId(whole, tenant).orElseThrow().getErrDescription(),
+                     "The refund amount 101.00 USD is above the paid rest 100.00 USD");
+        assertNoSecret(local.getAdditionalData());
+    }
+
+    @Test
+    public void refusalLogsErrDescriptionAtWarn() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        answer(REFUSED);
+        try (LogCapture logs = new LogCapture()) {
+            refund(payment, UUID.randomUUID(), "100.00");
+            refund(payment, UUID.randomUUID(), "100.01");
+            final List<String> lines = java.util.Arrays.stream(logs.text().split("\\R"))
+                                                       .filter(l -> l.contains("liqpay refund refused"))
+                                                       .collect(java.util.stream.Collectors.toList());
+            assertEquals(lines.size(), 2, logs.text());
+            assertTrue(lines.get(0).contains("WARN"), lines.get(0));
+            assertTrue(lines.get(0).contains("action=refund order_id=" + order + " status=error err_code=payment_err_status "
+                                             + "err_description=The payment system did not complete the transaction"), lines.get(0));
+            assertTrue(lines.get(1).contains("WARN"), lines.get(1));
+            assertTrue(lines.get(1).contains("err_code=refund_exceeds_paid err_description="), lines.get(1));
+            lines.forEach(RefundTest::assertNoSecret);
+        }
+    }
+
+    @Test
+    public void refusalPropertiesReachKillBill() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        answer(REFUSED);
+        final PaymentTransactionInfoPlugin i = refund(payment, UUID.randomUUID(), "100.00");
+        assertEquals(props(i).get("liqpay_status"), "error");
+        assertEquals(props(i).get("liqpay_err_code"), "payment_err_status");
+        assertEquals(props(i).get("liqpay_err_description"), "The payment system did not complete the transaction");
+        final JsonNode request = new ObjectMapper().readTree((String) props(i).get("liqpay_request"));
+        assertEquals(request.get("order_id").asText(), order);
+        assertEquals(request.get("action").asText(), "refund");
+        assertNoSecret((String) props(i).get("liqpay_request"));
+        assertEquals(i.getGatewayError(), "The payment system did not complete the transaction");
+
+        final PaymentTransactionInfoPlugin local = refund(payment, UUID.randomUUID(), "100.01");
+        assertNull(props(local).get("liqpay_status"));
+        assertEquals(props(local).get("liqpay_err_code"), "refund_exceeds_paid");
+        assertTrue(((String) props(local).get("liqpay_err_description")).contains("100.01"));
+        assertEquals(new ObjectMapper().readTree((String) props(local).get("liqpay_request")).get("amount").asText(), "100.01");
     }
 }

@@ -57,9 +57,7 @@ public class LiqPayClient {
     }
 
     public LiqPayResult refund(final LiqPayConfig c, final String orderId, final BigDecimal amount) throws LiqPayTransientException {
-        final Map<String, Object> p = new LinkedHashMap<>();
-        p.put("amount", money(amount));
-        return call(c, LiqPayAction.REFUND, orderId, p);
+        return call(c, LiqPayAction.REFUND, orderId, Map.of("amount", money(amount)));
     }
 
     /** `extra` holds the optional fields, for example `description`, `ip` and `server_url`. A null value is not sent. */
@@ -84,6 +82,21 @@ public class LiqPayClient {
         return refund(c, orderId, amount);
     }
 
+    /** The request fields of a call with no key, data or signature, so a row may store them. */
+    public static Map<String, Object> requestFields(final LiqPayAction action, final String orderId, final Map<String, Object> extra) {
+        final Map<String, Object> p = new LinkedHashMap<>();
+        p.put("version", API_VERSION);
+        p.put("action", action.wireName());
+        p.put("order_id", orderId);
+        p.putAll(extra);
+        return p;
+    }
+
+    /** The fields of a refund call. */
+    public static Map<String, Object> refundFields(final String orderId, final BigDecimal amount) {
+        return requestFields(LiqPayAction.REFUND, orderId, Map.of("amount", money(amount)));
+    }
+
     // --- Transport ---
 
     private LiqPayResult call(final LiqPayConfig c, final LiqPayAction action, final String orderId,
@@ -91,9 +104,7 @@ public class LiqPayClient {
         final Map<String, Object> params = new LinkedHashMap<>();
         params.put("version", API_VERSION);
         params.put("public_key", c.publicKey());
-        params.put("action", action.wireName());
-        params.put("order_id", orderId);
-        params.putAll(extra);
+        params.putAll(requestFields(action, orderId, extra));
         final String data = LiqPayEnvelope.encode(params);
         final String body = "data=" + URLEncoder.encode(data, StandardCharsets.UTF_8)
                             + "&signature=" + URLEncoder.encode(LiqPaySigner.sign(c.privateKey(), data), StandardCharsets.UTF_8);

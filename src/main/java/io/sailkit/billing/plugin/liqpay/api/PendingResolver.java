@@ -94,7 +94,7 @@ final class PendingResolver {
         if (refund && mapped == PaymentPluginStatus.PENDING) {
             return;
         }
-        store.updateFromLiqPay(row.getOrderId(), tenantId, r, mapped, TransactionInfos.checkoutForm(row));
+        store.updateFromLiqPay(row.getOrderId(), tenantId, r, mapped, TransactionInfos.kept(row));
     }
 
     private boolean isExpired(final LiqPayConfig c, final LiqpayTransactionsRecord row) {
