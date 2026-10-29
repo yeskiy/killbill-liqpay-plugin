@@ -20,14 +20,21 @@ import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import javax.servlet.ReadListener;
@@ -35,13 +42,16 @@ import javax.servlet.ServletInputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.sailkit.billing.plugin.liqpay.LogCapture;
 import io.sailkit.billing.plugin.liqpay.api.Fixtures;
 import io.sailkit.billing.plugin.liqpay.api.InMemoryStore;
+import io.sailkit.billing.plugin.liqpay.client.LiqPayResult;
 import io.sailkit.billing.plugin.liqpay.config.LiqPayConfig;
 import io.sailkit.billing.plugin.liqpay.crypto.LiqPayEnvelope;
 import io.sailkit.billing.plugin.liqpay.crypto.LiqPaySigner;
 import io.sailkit.billing.plugin.liqpay.dao.gen.tables.records.LiqpayTransactionsRecord;
+import org.killbill.billing.ErrorCode;
 import org.killbill.billing.account.api.Account;
 import org.killbill.billing.account.api.AccountUserApi;
 import org.killbill.billing.invoice.api.InvoicePayment;
@@ -53,6 +63,7 @@ import org.killbill.billing.payment.api.PaymentApiException;
 import org.killbill.billing.payment.api.PaymentOptions;
 import org.killbill.billing.payment.api.PaymentTransaction;
 import org.killbill.billing.payment.api.TransactionStatus;
+import org.killbill.billing.payment.plugin.api.PaymentPluginStatus;
 import org.killbill.billing.security.api.SecurityApi;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.TenantContext;
@@ -81,6 +92,8 @@ import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
 public class LiqPayCallbackServletTest {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final UUID tenant = UUID.randomUUID();
     private final List<String> secrets = new ArrayList<>();
@@ -529,6 +542,103 @@ public class LiqPayCallbackServletTest {
         assertEquals(post(body(callback(row, "success", 1000))), 200);
         assertEquals(status(row), "PROCESSED");
         verifyNoNotify();
+    }
+
+    // --- A settle by the Janitor and a callback at the same time ---
+
+    private static PaymentApiException invoiceAlreadyPaid() {
+        return new PaymentApiException(ErrorCode.PAYMENT_PLUGIN_API_ABORTED, PendingNotifier.INVOICE_CONTROL_PLUGIN);
+    }
+
+    /** The Janitor settles the row and the Kill Bill transaction while the callback notify waits for the account lock. */
+    private void janitorSettlesDuringTheNotify(final LiqpayTransactionsRecord row, final TransactionStatus kbFinal) throws Exception {
+        store.updateFromLiqPay(row.getOrderId(), tenant, LiqPayResult.from(JSON.valueToTree(callback(row, "success", 900))),
+                               PaymentPluginStatus.PROCESSED, Map.of());
+        doAnswer(i -> {
+            kbStatus.put(i.getArgument(1), kbFinal);
+            throw invoiceAlreadyPaid();
+        }).when(paymentApi).notifyPendingTransactionOfStateChangedWithPaymentControl(any(), any(), anyBoolean(), any(), any());
+    }
+
+    @Test
+    public void aCallbackForAPaymentThatTheJanitorSettledAnswers200() throws Exception {
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        janitorSettlesDuringTheNotify(row, TransactionStatus.SUCCESS);
+        final String b = body(callback(row, "success", 1000));
+        assertEquals(post(b), 200);
+        assertEquals(status(row), "PROCESSED");
+        assertEquals(kbStatus.get(UUID.fromString(row.getKbTransactionId())), TransactionStatus.SUCCESS);
+        verifyNotified(row, true, 1);
+        assertEquals(post(b), 200, "a replay");
+        verifyNotified(row, true, 1);
+    }
+
+    @Test
+    public void aPlainNotifyForAPaymentThatTheJanitorSettledAnswers200() throws Exception {
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        when(invoicePaymentApi.getInvoicePayments(any(UUID.class), any(TenantContext.class))).thenReturn(List.of());
+        doAnswer(i -> {
+            kbStatus.put(i.getArgument(1), TransactionStatus.SUCCESS);
+            throw new PaymentApiException(ErrorCode.PAYMENT_NO_SUCH_SUCCESS_PAYMENT, row.getKbPaymentId());
+        }).when(paymentApi).notifyPendingTransactionOfStateChanged(any(), any(), anyBoolean(), any());
+        assertEquals(post(body(callback(row, "success", 1000))), 200);
+        assertEquals(status(row), "PROCESSED");
+    }
+
+    @Test
+    public void anAbortForATransactionThatStaysPendingAnswers503() throws Exception {
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        janitorSettlesDuringTheNotify(row, TransactionStatus.PENDING);
+        assertEquals(post(body(callback(row, "success", 1000))), 503);
+        assertTrue(logs.text().contains("liqpay_notify_failed order_id=" + row.getOrderId() + " error=PaymentApiException"));
+    }
+
+    @Test
+    public void anAbortForAnotherFinalStateAnswers503() throws Exception {
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        janitorSettlesDuringTheNotify(row, TransactionStatus.PAYMENT_FAILURE);
+        assertEquals(post(body(callback(row, "success", 1000))), 503);
+    }
+
+    @Test
+    public void anotherKillBillErrorAfterTheJanitorSettledAnswers503() throws Exception {
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        doAnswer(i -> {
+            kbStatus.put(i.getArgument(1), TransactionStatus.SUCCESS);
+            throw new PaymentApiException(ErrorCode.PAYMENT_INTERNAL_ERROR, "internal");
+        }).when(paymentApi).notifyPendingTransactionOfStateChangedWithPaymentControl(any(), any(), anyBoolean(), any(), any());
+        assertEquals(post(body(callback(row, "success", 1000))), 503);
+    }
+
+    @Test
+    public void twoCallbacksAtTheSameTimeSettleThePaymentOnce() throws Exception {
+        final CyclicBarrier bothRead = new CyclicBarrier(2);
+        store = new InMemoryStore() {
+            @Override
+            public Optional<LiqpayTransactionsRecord> findByOrderId(final String orderId, final UUID tenantId) throws SQLException {
+                final Optional<LiqpayTransactionsRecord> found = super.findByOrderId(orderId, tenantId);
+                try {
+                    bothRead.await(10, TimeUnit.SECONDS);
+                } catch (final Exception e) {
+                    throw new SQLException(e);
+                }
+                return found;
+            }
+        };
+        servlet = servlet(Fixtures.config("https://www.liqpay.ua"));
+        final LiqpayTransactionsRecord row = pending("pay", "PENDING");
+        final String b = body(callback(row, "success", 1000));
+        final ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            final List<Future<Integer>> codes = pool.invokeAll(List.of(() -> post(b), () -> post(b)));
+            assertEquals(codes.get(0).get(), Integer.valueOf(200));
+            assertEquals(codes.get(1).get(), Integer.valueOf(200));
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(status(row), "PROCESSED");
+        assertEquals(kbStatus.get(UUID.fromString(row.getKbTransactionId())), TransactionStatus.SUCCESS);
+        verifyNotified(row, true, 1);
     }
 
     // --- Logs ---

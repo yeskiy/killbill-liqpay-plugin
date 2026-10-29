@@ -18,6 +18,7 @@ package io.sailkit.billing.plugin.liqpay.servlet;
 
 import java.time.Clock;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import io.sailkit.billing.plugin.liqpay.LiqPayActivator;
@@ -25,11 +26,13 @@ import io.sailkit.billing.plugin.liqpay.config.LiqPayConfig;
 import io.sailkit.billing.plugin.liqpay.dao.gen.tables.records.LiqpayTransactionsRecord;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
+import org.killbill.billing.ErrorCode;
 import org.killbill.billing.account.api.Account;
 import org.killbill.billing.account.api.AccountApiException;
 import org.killbill.billing.osgi.libs.killbill.OSGIKillbillAPI;
 import org.killbill.billing.payment.api.PaymentApiException;
 import org.killbill.billing.payment.api.PaymentOptions;
+import org.killbill.billing.payment.api.PaymentTransaction;
 import org.killbill.billing.payment.api.TransactionStatus;
 import org.killbill.billing.plugin.api.PluginCallContext;
 import org.killbill.billing.security.api.SecurityApi;
@@ -42,6 +45,10 @@ import org.killbill.billing.util.callcontext.CallContext;
 final class PendingNotifier {
 
     static final String INVOICE_CONTROL_PLUGIN = "__INVOICE_PAYMENT_CONTROL_PLUGIN__";
+
+    /** The codes Kill Bill gives for a notify of a transaction that is not PENDING any more. */
+    private static final Set<Integer> SETTLED_ELSEWHERE = Set.of(ErrorCode.PAYMENT_PLUGIN_API_ABORTED.getCode(),
+                                                                 ErrorCode.PAYMENT_NO_SUCH_SUCCESS_PAYMENT.getCode());
 
     private static final PaymentOptions INVOICE_OPTIONS = new PaymentOptions() {
         @Override
@@ -86,19 +93,34 @@ final class PendingNotifier {
         final UUID transactionId = UUID.fromString(row.getKbTransactionId());
         final CallContext context = new PluginCallContext(LiqPayActivator.PLUGIN_NAME, new DateTime(clock.millis(), DateTimeZone.UTC),
                                                           accountId, UUID.fromString(row.getKbTenantId()));
-        final boolean pending = killbill.getPaymentApi().getPayment(paymentId, false, false, List.of(), context)
-                                        .getTransactions().stream()
-                                        .anyMatch(t -> transactionId.equals(t.getId()) && t.getTransactionStatus() == TransactionStatus.PENDING);
-        if (!pending) {
+        if (status(paymentId, transactionId, context) != TransactionStatus.PENDING) {
             return false;
         }
         final Account account = killbill.getAccountUserApi().getAccountById(accountId, context);
-        if (killbill.getInvoicePaymentApi().getInvoicePayments(paymentId, context).isEmpty()) {
-            killbill.getPaymentApi().notifyPendingTransactionOfStateChanged(account, transactionId, success, context);
-        } else {
-            killbill.getPaymentApi().notifyPendingTransactionOfStateChangedWithPaymentControl(account, transactionId, success,
-                                                                                              INVOICE_OPTIONS, context);
+        try {
+            if (killbill.getInvoicePaymentApi().getInvoicePayments(paymentId, context).isEmpty()) {
+                killbill.getPaymentApi().notifyPendingTransactionOfStateChanged(account, transactionId, success, context);
+            } else {
+                killbill.getPaymentApi().notifyPendingTransactionOfStateChangedWithPaymentControl(account, transactionId, success,
+                                                                                                  INVOICE_OPTIONS, context);
+            }
+        } catch (final PaymentApiException e) {
+            // The Janitor settled the transaction after the PENDING check: the abort is no conflict when the outcome is the same.
+            if (!SETTLED_ELSEWHERE.contains(e.getCode())
+                || status(paymentId, transactionId, context) != (success ? TransactionStatus.SUCCESS : TransactionStatus.PAYMENT_FAILURE)) {
+                throw e;
+            }
+            return false;
         }
         return true;
+    }
+
+    private TransactionStatus status(final UUID paymentId, final UUID transactionId, final CallContext context) throws PaymentApiException {
+        return killbill.getPaymentApi().getPayment(paymentId, false, false, List.of(), context)
+                       .getTransactions().stream()
+                       .filter(t -> transactionId.equals(t.getId()))
+                       .map(PaymentTransaction::getTransactionStatus)
+                       .findFirst()
+                       .orElse(null);
     }
 }
