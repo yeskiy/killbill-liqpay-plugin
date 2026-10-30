@@ -43,7 +43,9 @@ public interface LiqPayStore {
     boolean updateFromLiqPay(String orderId, UUID tenantId, LiqPayResult result, PaymentPluginStatus newStatus,
                              Map<String, Object> kept) throws SQLException;
 
-    boolean cancelPending(String orderId, UUID tenantId, String errCode) throws SQLException;
+    /** Moves an open row to a final status that no LiqPay answer gave, for example CANCELED or ERROR. */
+    boolean closePending(String orderId, UUID tenantId, PaymentPluginStatus status, String errCode, String errDescription)
+            throws SQLException;
 
     void upsertPaymentMethod(LiqpayPaymentMethodsRecord row) throws SQLException;
 

@@ -136,12 +136,14 @@ public class LiqPayDao extends PluginDao implements LiqPayStore {
                                  .execute()) == 1;
     }
 
-    /** Marks an open row CANCELED, for example after the checkout expired. Returns false for a final row. */
+    /** Moves an open row to CANCELED or ERROR, for example after the checkout expired. Returns false for a final row. */
     @Override
-    public boolean cancelPending(final String orderId, final UUID tenantId, final String errCode) throws SQLException {
+    public boolean closePending(final String orderId, final UUID tenantId, final PaymentPluginStatus status, final String errCode,
+                                final String errDescription) throws SQLException {
         return withDsl(dsl -> dsl.update(LIQPAY_TRANSACTIONS)
-                                 .set(LIQPAY_TRANSACTIONS.PLUGIN_STATUS, PaymentPluginStatus.CANCELED.name())
+                                 .set(LIQPAY_TRANSACTIONS.PLUGIN_STATUS, status.name())
                                  .set(LIQPAY_TRANSACTIONS.ERR_CODE, errCode)
+                                 .set(LIQPAY_TRANSACTIONS.ERR_DESCRIPTION, errDescription)
                                  .set(LIQPAY_TRANSACTIONS.UPDATED_DATE, now())
                                  .where(LIQPAY_TRANSACTIONS.ORDER_ID.eq(orderId))
                                  .and(LIQPAY_TRANSACTIONS.KB_TENANT_ID.eq(tenantId.toString()))

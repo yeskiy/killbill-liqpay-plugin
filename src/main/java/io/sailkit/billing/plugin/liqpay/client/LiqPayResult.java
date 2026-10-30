@@ -37,6 +37,8 @@ public final class LiqPayResult {
     private final String errCode;
     private final String errDescription;
     private final String paytype;
+    private final BigDecimal refundAmount;
+    private final boolean waitReserve;
 
     private LiqPayResult(final JsonNode n) {
         this.result = text(n, "result");
@@ -51,6 +53,8 @@ public final class LiqPayResult {
         this.errCode = text(n, "err_code");
         this.errDescription = truncate(text(n, "err_description"), 1000);
         this.paytype = text(n, "paytype");
+        this.refundAmount = decimal(text(n, "refund_amount"));
+        this.waitReserve = "true".equals(text(n, "wait_reserve_status"));
     }
 
     public static LiqPayResult from(final JsonNode node) {
@@ -82,6 +86,12 @@ public final class LiqPayResult {
 
     public String paytype() { return paytype; }
 
+    /** The sum that LiqPay refunded from this order, or null when the answer has no `refund_amount`. */
+    public BigDecimal refundAmount() { return refundAmount; }
+
+    /** True when LiqPay reserved the money of this order for a refund that it runs later. */
+    public boolean waitReserve() { return waitReserve; }
+
     public boolean isError() {
         return "error".equals(result) || "error".equals(status) || errCode != null;
     }
@@ -100,6 +110,7 @@ public final class LiqPayResult {
         put(m, "err_code", errCode);
         put(m, "err_description", errDescription);
         put(m, "paytype", paytype);
+        put(m, "refund_amount", refundAmount == null ? null : refundAmount.toPlainString());
         return m;
     }
 

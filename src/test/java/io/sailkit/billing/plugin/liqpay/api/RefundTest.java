@@ -19,12 +19,14 @@ package io.sailkit.billing.plugin.liqpay.api;
 import java.math.BigDecimal;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.http.Fault;
 import io.sailkit.billing.plugin.liqpay.LogCapture;
 import io.sailkit.billing.plugin.liqpay.crypto.LiqPayEnvelope;
 import io.sailkit.billing.plugin.liqpay.dao.gen.tables.records.LiqpayTransactionsRecord;
@@ -55,6 +57,7 @@ public class RefundTest {
     private final UUID account = UUID.randomUUID();
     private WireMockServer server;
     private InMemoryStore store;
+    private Fixtures.MutableClock clock;
     private LiqPayPaymentPluginApi api;
 
     @BeforeClass
@@ -71,9 +74,9 @@ public class RefundTest {
     @BeforeMethod
     public void setUp() throws Exception {
         server.resetAll();
-        store = new InMemoryStore();
-        api = new LiqPayPaymentPluginApi(Fixtures.handler(tenant, Fixtures.config("http://localhost:" + server.port())), store,
-                                         new Fixtures.MutableClock());
+        clock = new Fixtures.MutableClock();
+        store = new InMemoryStore(clock);
+        api = new LiqPayPaymentPluginApi(Fixtures.handler(tenant, Fixtures.config("http://localhost:" + server.port())), store, clock);
     }
 
     private void answer(final String json) {
@@ -210,6 +213,146 @@ public class RefundTest {
         final PaymentTransactionInfoPlugin i = refund(payment, tx, "100.00");
         assertEquals(i.getStatus(), PaymentPluginStatus.PENDING);
         assertEquals(store.findByTransactionId(tx, tenant).orElseThrow().getPluginStatus(), "PENDING");
+    }
+
+    // --- A refund with no LiqPay answer ---
+
+    /** Sends a refund that LiqPay never answers, then makes every later call answer with the given status JSON. */
+    private UUID unanswered(final UUID payment, final String amount, final String statusJson) throws Exception {
+        server.stubFor(post(urlEqualTo("/api/request")).willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+        final UUID tx = UUID.randomUUID();
+        assertEquals(refund(payment, tx, amount).getStatus(), PaymentPluginStatus.PENDING);
+        server.resetAll();
+        answer(statusJson);
+        return tx;
+    }
+
+    private PaymentTransactionInfoPlugin info(final UUID payment, final UUID tx) throws Exception {
+        return api.getPaymentInfo(account, payment, List.of(), context(account, tenant)).stream()
+                  .filter(p -> p.getKbTransactionPaymentId().equals(tx)).findFirst().orElseThrow();
+    }
+
+    private long refundCalls() {
+        return sent().stream().filter(n -> "refund".equals(n.get("action").asText())).count();
+    }
+
+    private static String paidStatus(final String order, final String extra) {
+        return "{\"result\":\"ok\",\"action\":\"pay\",\"status\":\"success\",\"order_id\":\"" + order
+               + "\",\"amount\":\"100\",\"currency\":\"USD\"" + extra + "}";
+    }
+
+    @Test
+    public void anUnansweredRefundFailsOnlyAfterTheGrace() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "100.00", paidStatus(order, ""));
+        try (LogCapture logs = new LogCapture()) {
+            assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING);
+            assertTrue(logs.text().contains("liqpay refund pending order_id=" + order + " refund_order_id=" + tx
+                                            + " status=success reason=no_answer"), logs.text());
+        }
+        clock.advance(Duration.ofHours(24).minusMinutes(1));
+        assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING, "the default grace is 24 hours");
+        clock.advance(Duration.ofMinutes(2));
+        final PaymentTransactionInfoPlugin failed;
+        try (LogCapture logs = new LogCapture()) {
+            failed = info(payment, tx);
+            assertTrue(logs.text().contains("liqpay refund not received order_id=" + order + " refund_order_id=" + tx
+                                            + " status=ERROR err_code=refund_not_received"), logs.text());
+        }
+        assertEquals(failed.getStatus(), PaymentPluginStatus.ERROR);
+        assertEquals(failed.getGatewayErrorCode(), "refund_not_received");
+        assertTrue(failed.getGatewayError().contains("Check the LiqPay merchant account before a new refund"), failed.getGatewayError());
+        assertEquals(store.findByTransactionId(tx, tenant).orElseThrow().getPluginStatus(), "ERROR");
+        info(payment, tx);
+        assertEquals(refundCalls(), 0, "the plugin never sends the refund again");
+    }
+
+    @Test
+    public void anUnansweredRefundThatLiqPayReversedIsProcessed() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "100.00",
+                                   "{\"result\":\"ok\",\"action\":\"pay\",\"status\":\"reversed\",\"order_id\":\"" + order + "\"}");
+        clock.advance(Duration.ofDays(3));
+        assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PROCESSED);
+        assertEquals(refundCalls(), 0);
+    }
+
+    @Test
+    public void aPartialRefundThatTheRefundAmountShowsIsProcessed() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "40.00", paidStatus(order, ",\"refund_amount\":\"40\""));
+        clock.advance(Duration.ofDays(3));
+        assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PROCESSED);
+        assertEquals(refundCalls(), 0);
+    }
+
+    @Test
+    public void aRefundAmountOfEarlierRefundsOnlyFailsTheRefund() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        answer("{\"result\":\"ok\",\"status\":\"success\"}");
+        assertEquals(refund(payment, UUID.randomUUID(), "30.00").getStatus(), PaymentPluginStatus.PROCESSED);
+        server.resetAll();
+        final UUID tx = unanswered(payment, "40.00", paidStatus(order, ",\"refund_amount\":\"30\""));
+        clock.advance(Duration.ofDays(3));
+        assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.ERROR);
+    }
+
+    @Test
+    public void anUnexplainedRefundAmountKeepsTheRefundPending() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "40.00", paidStatus(order, ",\"refund_amount\":\"20\""));
+        clock.advance(Duration.ofDays(3));
+        try (LogCapture logs = new LogCapture()) {
+            assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING);
+            assertTrue(logs.text().contains("reason=refund_amount_unclear"), logs.text());
+        }
+    }
+
+    @Test
+    public void aRefundReservedByLiqPayStaysPendingAfterTheGrace() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "50.00", paidStatus(order, ",\"wait_reserve_status\":\"true\""));
+        clock.advance(Duration.ofDays(3));
+        assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING);
+        server.resetAll();
+        answer("{\"result\":\"ok\",\"action\":\"pay\",\"status\":\"wait_reserve\",\"order_id\":\"" + order + "\"}");
+        try (LogCapture logs = new LogCapture()) {
+            assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING);
+            assertTrue(logs.text().contains("status=wait_reserve reason=reserved"), logs.text());
+        }
+    }
+
+    @Test
+    public void anAnsweredPendingRefundNeverFailsByTheGrace() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        answer("{\"result\":\"ok\",\"status\":\"wait_compensation\"}");
+        final UUID tx = UUID.randomUUID();
+        assertEquals(refund(payment, tx, "100.00").getStatus(), PaymentPluginStatus.PENDING);
+        server.resetAll();
+        answer(paidStatus(order, ""));
+        clock.advance(Duration.ofDays(3));
+        try (LogCapture logs = new LogCapture()) {
+            assertEquals(info(payment, tx).getStatus(), PaymentPluginStatus.PENDING);
+            assertTrue(logs.text().contains("reason=accepted"), logs.text());
+        }
+    }
+
+    @Test
+    public void aKillBillRetryOfAnUnansweredRefundSendsNothing() throws Exception {
+        final UUID payment = UUID.randomUUID();
+        final String order = paid(payment, "PURCHASE", "PROCESSED");
+        final UUID tx = unanswered(payment, "100.00", paidStatus(order, ""));
+        assertEquals(refund(payment, tx, "100.00").getStatus(), PaymentPluginStatus.PENDING);
+        clock.advance(Duration.ofDays(2));
+        assertEquals(refund(payment, tx, "100.00").getStatus(), PaymentPluginStatus.PENDING);
+        assertEquals(server.findAll(postRequestedFor(urlEqualTo("/api/request"))).size(), 0);
     }
 
     // --- Refusals ---

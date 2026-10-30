@@ -61,6 +61,7 @@ public final class LiqPayConfig {
     private final String description;
     private final Duration checkoutTtl;
     private final Duration expiryGrace;
+    private final Duration refundGrace;
     private final BigDecimal verificationAmount;
     private final String verificationCurrency;
     private final URI apiBaseUrl;
@@ -95,6 +96,7 @@ public final class LiqPayConfig {
         this.description = optional(props, "description", "Payment");
         this.checkoutTtl = duration(props, "checkoutTtl", "PT30M");
         this.expiryGrace = duration(props, "expiryGrace", "PT15M");
+        this.refundGrace = duration(props, "refundGrace", "PT24H");
         this.verificationAmount = amount(optional(props, "verificationAmount", "1.00"));
         this.verificationCurrency = optional(props, "verificationCurrency", "UAH").toUpperCase(Locale.ROOT);
         this.apiBaseUrl = httpsUrl(optional(props, "apiBaseUrl", "https://www.liqpay.ua"), "apiBaseUrl", true);
@@ -144,6 +146,8 @@ public final class LiqPayConfig {
 
     public Duration expiryGrace() { return expiryGrace; }
 
+    public Duration refundGrace() { return refundGrace; }
+
     public BigDecimal verificationAmount() { return verificationAmount; }
 
     public String verificationCurrency() { return verificationCurrency; }
@@ -191,6 +195,7 @@ public final class LiqPayConfig {
                + ", language=" + language
                + ", checkoutTtl=" + checkoutTtl
                + ", expiryGrace=" + expiryGrace
+               + ", refundGrace=" + refundGrace
                + ", verificationAmount=" + verificationAmount
                + ", verificationCurrency=" + verificationCurrency
                + ", apiBaseUrl=" + apiBaseUrl

@@ -18,6 +18,9 @@ package io.sailkit.billing.plugin.liqpay.api;
 
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,6 +48,15 @@ public class InMemoryStore implements LiqPayStore {
     public final List<LiqpayPaymentMethodsRecord> methods = new ArrayList<>();
     public final List<LiqpayHppRequestsRecord> hppRequests = new ArrayList<>();
     public boolean failing;
+    private final Clock clock;
+
+    public InMemoryStore() {
+        this(Clock.systemUTC());
+    }
+
+    public InMemoryStore(final Clock clock) {
+        this.clock = clock;
+    }
 
     private void check() throws SQLException {
         if (failing) {
@@ -60,7 +72,9 @@ public class InMemoryStore implements LiqPayStore {
                                             || r.getKbTransactionId().equals(row.getKbTransactionId())))) {
             throw new SQLIntegrityConstraintViolationException("duplicate order id");
         }
-        rows.add(row.copy());
+        final LiqpayTransactionsRecord stored = row.copy();
+        stored.setCreatedDate(LocalDateTime.now(clock.withZone(ZoneOffset.UTC)));
+        rows.add(stored);
     }
 
     @Override
@@ -105,12 +119,14 @@ public class InMemoryStore implements LiqPayStore {
     }
 
     @Override
-    public synchronized boolean cancelPending(final String orderId, final UUID tenantId, final String errCode) throws SQLException {
+    public synchronized boolean closePending(final String orderId, final UUID tenantId, final PaymentPluginStatus status,
+                                             final String errCode, final String errDescription) throws SQLException {
         check();
         final Optional<LiqpayTransactionsRecord> row = find(orderId, tenantId).filter(r -> isOpen(r.getPluginStatus()));
         row.ifPresent(r -> {
-            r.setPluginStatus(PaymentPluginStatus.CANCELED.name());
+            r.setPluginStatus(status.name());
             r.setErrCode(errCode);
+            r.setErrDescription(errDescription);
         });
         return row.isPresent();
     }

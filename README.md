@@ -63,6 +63,7 @@ Each key has the prefix `org.killbill.billing.plugin.liqpay.`. A tenant with no 
 | `description` | `Payment` | The default description |
 | `checkoutTtl` | `PT30M` | Sent as `expired_date` of a hosted page |
 | `expiryGrace` | `PT15M` | A PENDING checkout becomes CANCELED when LiqPay knows no such order after `checkoutTtl` plus this time |
+| `refundGrace` | `PT24H` | A PENDING refund that LiqPay never answered becomes ERROR `refund_not_received` when the paid order still shows no refund this time after the request. The plugin never sends a refund again |
 | `verificationAmount`, `verificationCurrency` | `1.00`, `UAH` | The verification hold of mode `token` |
 | `apiBaseUrl` | `https://www.liqpay.ua` | `https://` only, except `http://localhost` and `http://127.0.0.1` for tests |
 | `connectTimeout`, `requestTimeout` | `PT10S`, `PT30S` | HTTP timeouts |
@@ -163,6 +164,7 @@ The plugin logs in as this user for each notify and logs out after it. Without `
 | On the sandbox, a partial `hold_completion` of a USD hold failed with `wrong_amount_currency`. A full completion of the same kind of hold worked | Capture the full held amount. The capture is ERROR with that `err_code` otherwise |
 | A refund sent seconds after a payment can answer `payment_err_status` | The refund is ERROR. Try a new refund later |
 | LiqPay reports no chargeback through the callback or the status API | Staff record a chargeback in Kill Bill |
+| A refund request can get no LiqPay answer, for example after a timeout | The refund stays PENDING. Each status check logs `liqpay refund pending` with a reason. The refund is PROCESSED when the paid order shows `reversed` or a `refund_amount` that covers it. It stays PENDING while LiqPay reserves money for it (`wait_reserve`). It becomes ERROR `refund_not_received` when the order still shows the payment after `refundGrace`. Check the LiqPay merchant account before a new refund |
 | LiqPay cannot reach a callback URL on a private network | A PENDING payment settles through `getPaymentInfo`, for example `GET /1.0/kb/payments/{id}?withPluginInfo=true`, or the Kill Bill Janitor |
 
 ## Build and test

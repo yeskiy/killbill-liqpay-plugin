@@ -168,7 +168,7 @@ public abstract class LiqPayDaoContract {
         assertTrue(dao.updateFromLiqPay(r.getOrderId(), tenant, result("success", 1000L), PaymentPluginStatus.PROCESSED));
         assertFalse(dao.updateFromLiqPay(r.getOrderId(), tenant, result("processing", 5000L), PaymentPluginStatus.PENDING));
         assertFalse(dao.updateFromLiqPay(r.getOrderId(), tenant, result("processing", null), PaymentPluginStatus.PENDING));
-        assertFalse(dao.cancelPending(r.getOrderId(), tenant, "expired"));
+        assertFalse(dao.closePending(r.getOrderId(), tenant, PaymentPluginStatus.CANCELED, "expired", null));
         assertEquals(dao.findByOrderId(r.getOrderId(), tenant).orElseThrow().getPluginStatus(), "PROCESSED");
     }
 
@@ -177,10 +177,22 @@ public abstract class LiqPayDaoContract {
         final UUID tenant = UUID.randomUUID();
         final LiqpayTransactionsRecord r = row(tenant, UUID.randomUUID(), UUID.randomUUID().toString());
         dao.insertTransaction(r);
-        assertTrue(dao.cancelPending(r.getOrderId(), tenant, "expired"));
+        assertTrue(dao.closePending(r.getOrderId(), tenant, PaymentPluginStatus.CANCELED, "expired", null));
         final LiqpayTransactionsRecord read = dao.findByOrderId(r.getOrderId(), tenant).orElseThrow();
         assertEquals(read.getPluginStatus(), "CANCELED");
         assertEquals(read.getErrCode(), "expired");
+    }
+
+    @Test
+    public void failsAnOpenRowWithADescription() throws Exception {
+        final UUID tenant = UUID.randomUUID();
+        final LiqpayTransactionsRecord r = row(tenant, UUID.randomUUID(), UUID.randomUUID().toString());
+        dao.insertTransaction(r);
+        assertTrue(dao.closePending(r.getOrderId(), tenant, PaymentPluginStatus.ERROR, "refund_not_received", "No refund"));
+        final LiqpayTransactionsRecord read = dao.findByOrderId(r.getOrderId(), tenant).orElseThrow();
+        assertEquals(read.getPluginStatus(), "ERROR");
+        assertEquals(read.getErrCode(), "refund_not_received");
+        assertEquals(read.getErrDescription(), "No refund");
     }
 
     @Test

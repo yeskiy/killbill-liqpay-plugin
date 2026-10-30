@@ -70,6 +70,7 @@ public class LiqPayConfigTest {
         assertEquals(c.description(), "Payment");
         assertEquals(c.checkoutTtl(), Duration.ofMinutes(30));
         assertEquals(c.expiryGrace(), Duration.ofMinutes(15));
+        assertEquals(c.refundGrace(), Duration.ofHours(24));
         assertEquals(c.verificationAmount(), new BigDecimal("1.00"));
         assertEquals(c.verificationCurrency(), "UAH");
         assertEquals(c.apiBaseUrl().toString(), "https://www.liqpay.ua");
